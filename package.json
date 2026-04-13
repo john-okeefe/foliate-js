@@ -16,8 +16,8 @@
   "exports": {
     "./*.js": "./*.js"
   },
-  "dependencies": {
-    "@techstark/opencv-js": "^4.12.0",
+  "optionalDependencies": {
+    "@techstark/opencv-js": "4.12.0-release.1",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow-models/coco-ssd": "^2.2.3"
   },
