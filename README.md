@@ -4,7 +4,7 @@ Library for rendering e-books in the browser.
 
 Features:
 - Supports EPUB, MOBI, KF8 (AZW3), FB2, CBZ, PDF (experimental; requires PDF.js)
-- Optional panel detection for manga and comics (requires optional dependencies)
+- Panel detection for manga and comics (ML/CV libraries vendored, ~25MB total)
 - Add support for other formats yourself by implementing the book interface
 - Pure JavaScript
 - Small and modular
@@ -144,50 +144,85 @@ CBZs are similarly handled like fixed-layout EPUBs.
 
 ### Panel Detection
 
-The fixed-layout renderer includes an optional panel detection feature for manga, comics, and other fixed-layout content. When enabled, it automatically detects panel boundaries and allows for panel-by-panel navigation.
+The fixed-layout renderer includes an optional panel detection feature for manga, comics, and other fixed-layout content. When enabled, it automatically detects panel boundaries and allows for panel-by-panel navigation, making it easier to read complex page layouts on smaller screens.
 
-This feature requires optional dependencies that are not installed by default:
+#### How It Works
 
-```bash
-# Install with panel detection (includes ~4.5MB of ML/CV libraries)
-npm install foliate-js
+Panel detection uses a multi-tier fallback system that automatically selects the best detection method:
 
-# Install without panel detection (lightweight, uses grid-based fallback)
-npm install foliate-js --omit=optional
+1. **OpenCV Edge Detection** (Tier 1): Fast, accurate detection using computer vision algorithms. Works best for manga/comics with clear panel borders and high contrast.
+2. **COCO-SSD ML Detection** (Tier 2): Machine learning-based detection that handles irregular layouts, speech bubbles, and scenes without clear panel boundaries.
+3. **Grid-Based Detection** (Tier 3): Lightweight fallback that divides pages into a configurable grid. Always works regardless of image content.
+
+The system automatically falls back through the tiers if a higher tier fails to detect panels or if required libraries aren't available.
+
+#### Content Security Policy (CSP) Requirements
+
+The ML-based detection methods (Tiers 1 and 2) require the `'unsafe-eval'` CSP directive because OpenCV.js uses `eval()` and `new Function()` internally for performance optimization.
+
+If your CSP doesn't allow `'unsafe-eval'`, the system will automatically fall back to grid-based detection. To enable full ML detection, configure your CSP like this:
+
+```http
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'
 ```
 
-When panel detection is available, it uses a multi-tier fallback system:
-1. OpenCV edge detection (fast, accurate for clear panel borders)
-2. ML-based detection with COCO-SSD (handles irregular layouts)
-3. Grid-based detection (lightweight, always works)
+This is safe for ebook reading because:
+- The ML/CV libraries are vendored from trusted sources (OpenCV, TensorFlow)
+- No user-provided scripts are executed
+- The libraries only run on page content, not external code
 
-To use panel detection:
+#### Usage
+
+Basic usage:
 
 ```js
 const view = document.createElement('foliate-view')
 await view.open('manga.epub')
 
-// Check if renderer supports panel detection
-if (view.renderer.togglePanelMode) {
-    // Enable panel mode
-    view.renderer.togglePanelMode()
-    
-    // Navigate between panels
-    await view.renderer.nextPanel()
-    await view.renderer.prevPanel()
-    
-    // Get panel information
-    console.log(view.renderer.panelCount)        // number of panels
-    console.log(view.renderer.currentPanelIndex) // current panel
-}
+// Enable panel mode
+await view.renderer.togglePanelMode()
+
+// Navigate between panels
+await view.renderer.nextPanel()     // go to next panel
+await view.renderer.prevPanel()     // go to previous panel
+
+// Get panel information
+console.log(view.renderer.panelCount)        // total number of panels
+console.log(view.renderer.currentPanelIndex) // current panel (0-indexed)
 ```
 
-Panel mode can also be toggled via keyboard shortcuts:
-- `P` to toggle panel mode on/off
-- Arrow keys or `h`/`l` to navigate panels when in panel mode
-- `Escape` to exit panel mode
+The renderer exposes these panel-related methods and properties:
+- `togglePanelMode()`: Enable or disable panel mode
+- `nextPanel()`: Navigate to the next panel
+- `prevPanel()`: Navigate to the previous panel
+- `panelCount`: Number of detected panels on current page
+- `currentPanelIndex`: Index of current panel (0 to panelCount - 1)
 
-The renderer will gracefully fall back to grid-based detection if the optional dependencies are not available, so panel navigation will work regardless of whether the ML/CV libraries are installed.
+#### Keyboard Shortcuts
+
+When using the library with the demo reader (`reader.html`), these keyboard shortcuts are available:
+
+- `P`: Toggle panel mode on/off
+- Arrow keys (←/→) or `h`/`l`: Navigate between panels when in panel mode
+- `Escape`: Exit panel mode and return to normal page view
+
+#### Technical Details
+
+The panel detection system uses vendored ML/CV libraries (approximately 12.5MB):
+- **OpenCV.js** (~11MB): Computer vision library for edge detection
+- **TensorFlow.js** (~1.5MB): ML runtime for COCO-SSD model
+- **COCO-SSD** (~9KB): Pre-trained object detection model
+
+These libraries are loaded dynamically the first time panel detection is used, minimizing initial load time. The libraries are vendored in the `vendor/` directory and loaded as UMD/global builds to ensure browser compatibility without requiring ES module imports.
+
+#### Browser Compatibility
+
+Panel detection requires modern JavaScript features and works on:
+- Chromium 90+
+- Firefox 88+
+- Safari 15+
+
+The feature gracefully degrades on older browsers by falling back to grid-based detection.
 
 ### The Renderers
 
