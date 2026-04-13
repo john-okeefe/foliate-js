@@ -1,6 +1,34 @@
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import terser from "@rollup/plugin-terser";
 import { copy } from "fs-extra";
+import https from "https";
+
+const downloadTensorFlow = () => ({
+  name: "download-tensorflow",
+  async writeBundle() {
+    const url = "https://unpkg.com/@tensorflow/tfjs@4.22.0/dist/tf.min.js";
+    const dest = "vendor/tfjs/tf.min.js";
+
+    console.log(`Downloading ${url}...`);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to download: ${response.statusText}`);
+    }
+
+    const buffer = await response.arrayBuffer();
+
+    // Create directory
+    const fs = await import("fs");
+    const path = await import("path");
+    const dir = path.dirname(dest);
+
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    await fs.promises.writeFile(dest, new Uint8Array(buffer));
+    console.log(`Downloaded ${buffer.byteLength} bytes to ${dest}`);
+  },
+});
 
 const copyPDFJS = () => ({
   name: "copy-pdfjs",
@@ -34,15 +62,6 @@ const copyOpenCV = () => ({
     );
   },
 });
-const copyTensorFlow = () => ({
-  name: "copy-tensorflow",
-  async writeBundle() {
-    await copy(
-      "node_modules/@tensorflow/tfjs/dist/index.js",
-      "vendor/tfjs/tf.min.js",
-    );
-  },
-});
 const copyCocoSsd = () => ({
   name: "copy-coco-ssd",
   async writeBundle() {
@@ -72,7 +91,7 @@ export default [
       terser(),
       copyPDFJS(),
       copyOpenCV(),
-      copyTensorFlow(),
+      downloadTensorFlow(),
       copyCocoSsd(),
     ],
   },

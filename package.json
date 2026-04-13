@@ -27,7 +27,6 @@
     "pdfjs-dist": "^5.5.207",
     "@techstark/opencv-js": "4.12.0-release.1",
     "@tensorflow-models/coco-ssd": "^2.2.3",
-    "@tensorflow/tfjs": "^4.22.0",
     "rollup": "^4.22.4"
   },
   "scripts": {
