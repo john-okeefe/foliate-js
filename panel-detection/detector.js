@@ -1,9 +1,11 @@
+import { loadMLLibraries, getLibrariesStatus } from "./load-scripts.js";
+
 // panel-detection/detector.js
 // Main panel detector with lazy-loaded fallback chain
+import { loadMLLibraries, getLibrariesStatus } from "./load-scripts.js";
 export class PanelDetector {
-  #opencv = null;
-  #model = null;
   #cache = new Map();
+  #scriptsLoaded = false;
 
   async detectPanels(doc, index, force = false) {
     const cacheKey = `${doc.location?.pathname || ""}-${index}`;
@@ -15,6 +17,33 @@ export class PanelDetector {
     const imageData = this.#extractImageData(doc);
     if (!imageData) {
       return { panels: [], method: "no-image", confidence: 0 };
+    }
+
+    // Load ML libraries on first use
+    if (!this.#scriptsLoaded) {
+      const result = await loadMLLibraries();
+      if (!result.loaded) {
+        console.warn(
+          "ML libraries not available, using grid detection:",
+          result.reason,
+        );
+        // Fall back to grid immediately
+        const { detectPanelsGrid } = await import("./grid.js");
+        const panels = detectPanelsGrid(imageData);
+        this.#cache.set(cacheKey, {
+          panels,
+          method: "grid",
+          confidence: 0.4,
+          reason: result.reason,
+        });
+        return {
+          panels,
+          method: "grid",
+          confidence: 0.4,
+          reason: result.reason,
+        };
+      }
+      this.#scriptsLoaded = true;
     }
 
     const result = await this.#runDetectionPipeline(imageData);
@@ -39,44 +68,49 @@ export class PanelDetector {
     const { detectPanelsML } = await import("./coco-ssd.js");
     const { detectPanelsGrid } = await import("./grid.js");
 
-    if (!this.#opencv) {
-      try {
-        this.#opencv = await this.#loadOpenCV();
-      } catch (e) {
-        console.warn("Failed to load OpenCV:", e);
-      }
-    }
+    // Try OpenCV (uses global cv)
+    try {
+      const cv = globalThis.cv;
+      if (cv && cv.Mat) {
+        // Wait for OpenCV to be ready
+        await new Promise((resolve, reject) => {
+          const check = () => {
+            if (cv && cv.Mat) resolve();
+            else if (cv && cv.readyState === "complete")
+              reject(new Error("OpenCV failed to load"));
+            else setTimeout(check, 50);
+          };
+          check();
+        });
 
-    if (this.#opencv) {
-      try {
-        const panels = await detectPanelsOpenCV(imageData, this.#opencv);
+        const panels = await detectPanelsOpenCV(imageData, cv);
         if (this.#validatePanels(panels, imageData)) {
           return { panels, method: "opencv", confidence: 0.85 };
         }
-      } catch (e) {
-        console.warn("OpenCV detection failed:", e);
       }
+    } catch (e) {
+      console.warn("OpenCV detection failed:", e);
     }
 
-    if (!this.#model) {
-      try {
-        this.#model = await this.#loadModel();
-      } catch (e) {
-        console.warn("Failed to load ML model:", e);
-      }
-    }
+    // Try ML (uses global cocoSsd)
+    try {
+      const cocoSsd = globalThis.cocoSsd;
+      if (cocoSsd) {
+        // Wait for COCO-SSD to be ready
+        if (!cocoSsd.load) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
 
-    if (this.#model) {
-      try {
-        const panels = await detectPanelsML(imageData, this.#model);
+        const panels = await detectPanelsML(imageData, cocoSsd);
         if (this.#validatePanels(panels, imageData)) {
           return { panels, method: "ml", confidence: 0.7 };
         }
-      } catch (e) {
-        console.warn("ML detection failed:", e);
       }
+    } catch (e) {
+      console.warn("ML detection failed:", e);
     }
 
+    // Grid fallback (always works)
     const panels = detectPanelsGrid(imageData);
     return { panels, method: "grid", confidence: 0.4 };
   }
@@ -96,44 +130,16 @@ export class PanelDetector {
     return coverage > 0.1 && coverage < 0.95;
   }
 
-  async #loadOpenCV() {
-    if (this.#opencv) return this.#opencv;
-
-    try {
-      const cv = await import("../vendor/opencv/opencv.js");
-
-      await new Promise((resolve, reject) => {
-        const check = () => {
-          if (cv && cv.Mat) resolve();
-          else if (cv.readyState === "complete")
-            reject(new Error("OpenCV failed to load"));
-          else setTimeout(check, 50);
-        };
-        check();
-      });
-
-      this.#opencv = cv.default || cv;
-      return this.#opencv;
-    } catch (e) {
-      console.warn("Failed to load OpenCV:", e);
-      return null;
-    }
-  }
-  async #loadModel() {
-    if (this.#model) return this.#model;
-
-    try {
-      await import("../vendor/tfjs/tf.min.js");
-      const cocoSsd = await import("../vendor/coco-ssd/coco-ssd.min.js");
-      this.#model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
-      return this.#model;
-    } catch (e) {
-      console.warn("Failed to load ML model:", e);
-      return null;
-    }
-  }
-
   clear() {
     this.#cache.clear();
+  }
+
+  // Expose library status for debugging
+  getStatus() {
+    return {
+      ...getLibrariesStatus(),
+      scriptsLoaded: this.#scriptsLoaded,
+      cacheSize: this.#cache.size,
+    };
   }
 }
