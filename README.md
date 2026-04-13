@@ -4,6 +4,7 @@ Library for rendering e-books in the browser.
 
 Features:
 - Supports EPUB, MOBI, KF8 (AZW3), FB2, CBZ, PDF (experimental; requires PDF.js)
+- Optional panel detection for manga and comics (requires optional dependencies)
 - Add support for other formats yourself by implementing the book interface
 - Pure JavaScript
 - Small and modular
@@ -140,6 +141,53 @@ Note that KF8 files can contain fonts that are zlib-compressed. They need to be 
 There is a proof-of-concept, highly experimental adapter for [PDF.js](https://mozilla.github.io/pdf.js/), with which you can show PDFs using the same fixed-layout renderer for EPUBs.
 
 CBZs are similarly handled like fixed-layout EPUBs.
+
+### Panel Detection
+
+The fixed-layout renderer includes an optional panel detection feature for manga, comics, and other fixed-layout content. When enabled, it automatically detects panel boundaries and allows for panel-by-panel navigation.
+
+This feature requires optional dependencies that are not installed by default:
+
+```bash
+# Install with panel detection (includes ~4.5MB of ML/CV libraries)
+npm install foliate-js
+
+# Install without panel detection (lightweight, uses grid-based fallback)
+npm install foliate-js --omit=optional
+```
+
+When panel detection is available, it uses a multi-tier fallback system:
+1. OpenCV edge detection (fast, accurate for clear panel borders)
+2. ML-based detection with COCO-SSD (handles irregular layouts)
+3. Grid-based detection (lightweight, always works)
+
+To use panel detection:
+
+```js
+const view = document.createElement('foliate-view')
+await view.open('manga.epub')
+
+// Check if renderer supports panel detection
+if (view.renderer.togglePanelMode) {
+    // Enable panel mode
+    view.renderer.togglePanelMode()
+    
+    // Navigate between panels
+    await view.renderer.nextPanel()
+    await view.renderer.prevPanel()
+    
+    // Get panel information
+    console.log(view.renderer.panelCount)        // number of panels
+    console.log(view.renderer.currentPanelIndex) // current panel
+}
+```
+
+Panel mode can also be toggled via keyboard shortcuts:
+- `P` to toggle panel mode on/off
+- Arrow keys or `h`/`l` to navigate panels when in panel mode
+- `Escape` to exit panel mode
+
+The renderer will gracefully fall back to grid-based detection if the optional dependencies are not available, so panel navigation will work regardless of whether the ML/CV libraries are installed.
 
 ### The Renderers
 
