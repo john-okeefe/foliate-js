@@ -101,6 +101,24 @@ class Reader {
           this.view?.renderer.setAttribute("flow", value);
         },
       },
+      {
+        name: "panel-mode",
+        label: "Panel Mode",
+        type: "checkbox",
+        checked: false,
+        onclick: () => {
+          // ← No 'value' parameter for checkbox
+          const renderer = this.view?.renderer;
+          if (!renderer?.togglePanelMode) return;
+
+          const isActive = renderer.hasAttribute("panel-mode");
+          if (isActive) {
+            renderer.removeAttribute("panel-mode");
+          } else {
+            renderer.togglePanelMode();
+          }
+        },
+      },
     ]);
     menu.element.classList.add("menu");
 
