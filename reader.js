@@ -104,18 +104,23 @@ class Reader {
       {
         name: "panel-mode",
         label: "Panel Mode",
-        type: "checkbox",
-        checked: false,
-        onclick: () => {
-          // ← No 'value' parameter for checkbox
+        type: "radio",
+        items: [
+          ["Off", "off"],
+          ["On", "on"],
+        ],
+        onclick: (value) => {
           const renderer = this.view?.renderer;
           if (!renderer?.togglePanelMode) return;
 
-          const isActive = renderer.hasAttribute("panel-mode");
-          if (isActive) {
-            renderer.removeAttribute("panel-mode");
+          if (value === "on") {
+            if (!renderer.hasAttribute("panel-mode")) {
+              renderer.togglePanelMode();
+            }
           } else {
-            renderer.togglePanelMode();
+            if (renderer.hasAttribute("panel-mode")) {
+              renderer.togglePanelMode();
+            }
           }
         },
       },

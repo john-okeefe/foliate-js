@@ -97,23 +97,40 @@ export class PanelDetector {
   }
 
   async #loadOpenCV() {
-    const { default: cv } = await import("@techstark/opencv-js");
-    await new Promise((resolve, reject) => {
-      const check = () => {
-        if (cv && cv.Mat) resolve();
-        else if (!cv || cv.readyState === "complete")
-          reject(new Error("OpenCV failed to load"));
-        else setTimeout(check, 50);
-      };
-      check();
-    });
-    return cv;
-  }
+    if (this.#opencv) return this.#opencv;
 
+    try {
+      const cv = await import("../vendor/opencv/opencv.js");
+
+      await new Promise((resolve, reject) => {
+        const check = () => {
+          if (cv && cv.Mat) resolve();
+          else if (cv.readyState === "complete")
+            reject(new Error("OpenCV failed to load"));
+          else setTimeout(check, 50);
+        };
+        check();
+      });
+
+      this.#opencv = cv.default || cv;
+      return this.#opencv;
+    } catch (e) {
+      console.warn("Failed to load OpenCV:", e);
+      return null;
+    }
+  }
   async #loadModel() {
-    const tf = await import("@tensorflow/tfjs");
-    const cocoSsd = await import("@tensorflow-models/coco-ssd");
-    return await cocoSsd.load({ base: "lite_mobilenet_v2" });
+    if (this.#model) return this.#model;
+
+    try {
+      await import("../vendor/tfjs/tf.min.js");
+      const cocoSsd = await import("../vendor/coco-ssd/coco-ssd.min.js");
+      this.#model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+      return this.#model;
+    } catch (e) {
+      console.warn("Failed to load ML model:", e);
+      return null;
+    }
   }
 
   clear() {
