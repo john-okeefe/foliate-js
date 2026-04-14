@@ -5,7 +5,7 @@ export async function detectPanelsOpenCV(imageData, cv) {
   const gray = new cv.Mat();
   const blurred = new cv.Mat();
   const edges = new cv.Mat();
-  const contours = new cv.Mat();
+  const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
 
   try {
