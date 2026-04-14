@@ -529,6 +529,8 @@ export class FixedLayout extends HTMLElement {
     this.#currentPanels = [];
     this.#hidePanelOverlay();
     this.removeAttribute("panel-mode");
+    this.removeAttribute("zoom");
+    this.scrollTo(0, 0);
     this.#render();
   }
 
