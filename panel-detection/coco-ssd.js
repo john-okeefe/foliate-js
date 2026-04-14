@@ -8,11 +8,11 @@ export async function detectPanelsML(imageData, model) {
   ctx.putImageData(imageData, 0, 0);
 
   const predictions = await model.detect(canvas);
+  console.log("[COCO-SSD] Got", predictions.length, "predictions");
 
   const panels = [];
   const imgWidth = imageData.width;
   const imgHeight = imageData.height;
-
   for (let i = 0; i < predictions.length; i++) {
     const pred = predictions[i];
     const [x, y, w, h] = pred.bbox;

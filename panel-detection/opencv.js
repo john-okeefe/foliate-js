@@ -41,6 +41,7 @@ export async function detectPanelsOpenCV(imageData, cv) {
         reading_order: i,
       });
     }
+    console.log("[OpenCV] Detected", panels.length, "potential panels");
 
     panels.sort((a, b) => {
       const rowA = Math.floor(a.y / 20);

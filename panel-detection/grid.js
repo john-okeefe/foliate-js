@@ -82,7 +82,7 @@ function mergeAdjacentPanels(panels) {
         }
       }
     }
-
+    console.log("[Grid] Merged to", merged.length, "panels");
     merged.push(current);
   }
 

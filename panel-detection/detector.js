@@ -10,6 +10,7 @@ export class PanelDetector {
     const cacheKey = `${doc.location?.pathname || ""}-${index}`;
 
     if (!force && this.#cache.has(cacheKey)) {
+      console.log("[Panel Detection] Using cached result");
       return this.#cache.get(cacheKey);
     }
 
@@ -17,7 +18,10 @@ export class PanelDetector {
     if (!imageData) {
       return { panels: [], method: "no-image", confidence: 0 };
     }
-
+    console.log(
+      "[Panel Detection] Starting detection for image:",
+      `${imageData.width}x${imageData.height}px`,
+    );
     // Load ML libraries on first use
     if (!this.#scriptsLoaded) {
       const result = await loadMLLibraries();
@@ -66,7 +70,7 @@ export class PanelDetector {
     const { detectPanelsOpenCV } = await import("./opencv.js");
     const { detectPanelsML } = await import("./coco-ssd.js");
     const { detectPanelsGrid } = await import("./grid.js");
-
+    console.log("[Panel Detection] Attempting OpenCV detection...");
     // Try OpenCV (uses global cv)
     try {
       const cv = globalThis.cv;
@@ -83,8 +87,12 @@ export class PanelDetector {
         });
 
         const panels = await detectPanelsOpenCV(imageData, cv);
+        console.log("[Panel Detection] OpenCV found", panels.length, "panels");
         if (this.#validatePanels(panels, imageData)) {
+          console.log("[Panel Detection] ✓ Using OpenCV detection");
           return { panels, method: "opencv", confidence: 0.85 };
+        } else {
+          console.log("[Panel Detection] ✗ OpenCV panels failed validation");
         }
       }
     } catch (e) {
@@ -92,17 +100,26 @@ export class PanelDetector {
     }
 
     // Try ML (uses global cocoSsd)
+    console.log("[Panel Detection] Attempting ML detection...");
     try {
       const cocoSsdModule = globalThis.cocoSsd;
       if (cocoSsdModule && cocoSsdModule.load) {
         // Load model if not cached
         if (!this.#model) {
+          console.log("[Panel Detection] Loading COCO-SSD model...");
           this.#model = await cocoSsdModule.load();
+          console.log("[Panel Detection] COCO-SSD model loaded");
+        } else {
+          console.log("[Panel Detection] Using cached COCO-SSD model");
         }
 
         const panels = await detectPanelsML(imageData, this.#model);
+        console.log("[Panel Detection] ML found", panels.length, "panels");
         if (this.#validatePanels(panels, imageData)) {
+          console.log("[Panel Detection] ✓ Using ML detection");
           return { panels, method: "ml", confidence: 0.7 };
+        } else {
+          console.log("[Panel Detection] ✗ ML panels failed validation");
         }
       }
     } catch (e) {
@@ -110,7 +127,13 @@ export class PanelDetector {
     }
 
     // Grid fallback (always works)
+    console.log("[Panel Detection] Falling back to grid detection");
     const panels = detectPanelsGrid(imageData);
+    console.log(
+      "[Panel Detection] ✓ Using grid detection, found",
+      panels.length,
+      "panels",
+    );
     return { panels, method: "grid", confidence: 0.4 };
   }
 
