@@ -1,11 +1,10 @@
-import { loadMLLibraries, getLibrariesStatus } from "./load-scripts.js";
-
 // panel-detection/detector.js
 // Main panel detector with lazy-loaded fallback chain
 import { loadMLLibraries, getLibrariesStatus } from "./load-scripts.js";
 export class PanelDetector {
   #cache = new Map();
   #scriptsLoaded = false;
+  #model = null;
 
   async detectPanels(doc, index, force = false) {
     const cacheKey = `${doc.location?.pathname || ""}-${index}`;
@@ -94,14 +93,14 @@ export class PanelDetector {
 
     // Try ML (uses global cocoSsd)
     try {
-      const cocoSsd = globalThis.cocoSsd;
-      if (cocoSsd) {
-        // Wait for COCO-SSD to be ready
-        if (!cocoSsd.load) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+      const cocoSsdModule = globalThis.cocoSsd;
+      if (cocoSsdModule && cocoSsdModule.load) {
+        // Load model if not cached
+        if (!this.#model) {
+          this.#model = await cocoSsdModule.load();
         }
 
-        const panels = await detectPanelsML(imageData, cocoSsd);
+        const panels = await detectPanelsML(imageData, this.#model);
         if (this.#validatePanels(panels, imageData)) {
           return { panels, method: "ml", confidence: 0.7 };
         }
@@ -132,6 +131,7 @@ export class PanelDetector {
 
   clear() {
     this.#cache.clear();
+    this.#model = null;
   }
 
   // Expose library status for debugging
