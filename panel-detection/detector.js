@@ -49,7 +49,7 @@ export class PanelDetector {
       this.#scriptsLoaded = true;
     }
 
-    const result = await this.#runDetectionPipeline(imageData);
+    const result = await this.#runDetectionPipeline(imageData, doc);
     this.#cache.set(cacheKey, result);
     return result;
   }
@@ -66,10 +66,61 @@ export class PanelDetector {
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
-  async #runDetectionPipeline(imageData) {
+  async #runDetectionPipeline(imageData, doc) {
     const { detectPanelsOpenCV } = await import("./opencv.js");
-    const { detectPanelsML } = await import("./coco-ssd.js");
     const { detectPanelsGrid } = await import("./grid.js");
+    // Try metadata extraction (NEW - highest priority)
+    console.log("[Panel Detection] Checking for metadata panels...");
+    try {
+      const { extractPanelMetadata, hasMetadata } =
+        await import("./metadata-extractor.js");
+
+      console.log("[DEBUG] doc type:", typeof doc);
+      console.log("[DEBUG] doc exists:", !!doc);
+      console.log("[DEBUG] hasMetadata result:", hasMetadata(doc));
+      console.log(
+        "[DEBUG] Amazon links:",
+        doc?.querySelectorAll("a[data-app-amzn-mzn-magnify]")?.length,
+      );
+      console.log(
+        "[DEBUG] Linkhotspots:",
+        doc?.querySelectorAll('.linkhotspot[style*="top"]')?.length,
+      );
+      console.log("[DEBUG] doc URL:", doc.location?.href);
+      console.log("[DEBUG] doc readyState:", doc.readyState);
+      console.log("[DEBUG] doc has body:", !!doc.body);
+      console.log(
+        "[DEBUG] doc.body.innerHTML length:",
+        doc.body?.innerHTML.length,
+      );
+      console.log("[DEBUG] All links:", doc.querySelectorAll("a").length);
+      console.log("[DEBUG] All divs:", doc.querySelectorAll("div").length);
+      if (hasMetadata(doc)) {
+        const metadataResult = await extractPanelMetadata(
+          doc,
+          doc.location?.pathname,
+        );
+
+        if (metadataResult.panels.length > 0) {
+          console.log(
+            `[Panel Detection] ✓ Using metadata panels (${metadataResult.panels.length} panels)`,
+          );
+
+          // Store panels for potential augmentation
+          const metadataPanels = metadataResult.panels;
+
+          // Check if metadata is complete or needs augmentation
+          // For now, use metadata as-is (detection augmentation comes in Phase 2)
+          return {
+            panels: metadataPanels,
+            method: "metadata",
+            confidence: metadataResult.confidence,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Metadata extraction failed:", e);
+    }
     console.log("[Panel Detection] Attempting OpenCV detection...");
     // Try OpenCV (uses global cv)
     try {
@@ -97,33 +148,6 @@ export class PanelDetector {
       }
     } catch (e) {
       console.warn("OpenCV detection failed:", e);
-    }
-
-    // Try ML (uses global cocoSsd)
-    console.log("[Panel Detection] Attempting ML detection...");
-    try {
-      const cocoSsdModule = globalThis.cocoSsd;
-      if (cocoSsdModule && cocoSsdModule.load) {
-        // Load model if not cached
-        if (!this.#model) {
-          console.log("[Panel Detection] Loading COCO-SSD model...");
-          this.#model = await cocoSsdModule.load();
-          console.log("[Panel Detection] COCO-SSD model loaded");
-        } else {
-          console.log("[Panel Detection] Using cached COCO-SSD model");
-        }
-
-        const panels = await detectPanelsML(imageData, this.#model);
-        console.log("[Panel Detection] ML found", panels.length, "panels");
-        if (this.#validatePanels(panels, imageData)) {
-          console.log("[Panel Detection] ✓ Using ML detection");
-          return { panels, method: "ml", confidence: 0.7 };
-        } else {
-          console.log("[Panel Detection] ✗ ML panels failed validation");
-        }
-      }
-    } catch (e) {
-      console.warn("ML detection failed:", e);
     }
 
     // Grid fallback (always works)
@@ -154,7 +178,6 @@ export class PanelDetector {
 
   clear() {
     this.#cache.clear();
-    this.#model = null;
   }
 
   // Expose library status for debugging
