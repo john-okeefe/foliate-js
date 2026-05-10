@@ -129,7 +129,12 @@ const makeTOCItem = (item) => ({
   subitems: item.items.length ? item.items.map(makeTOCItem) : null,
 });
 
-export const makePDF = async (file) => {
+export const makePDF = async (file, options = {}) => {
+  const cMapUrl = options.cMapUrl ?? pdfjsPath("cmaps/");
+  const standardFontDataUrl = options.standardFontDataUrl ?? pdfjsPath("standard_fonts/");
+  if (options.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = options.workerSrc;
+  }
   const transport = new pdfjsLib.PDFDataRangeTransport(file.size, []);
   transport.requestDataRange = (begin, end) => {
     file
@@ -141,8 +146,8 @@ export const makePDF = async (file) => {
   };
   const pdf = await pdfjsLib.getDocument({
     range: transport,
-    cMapUrl: pdfjsPath("cmaps/"),
-    standardFontDataUrl: pdfjsPath("standard_fonts/"),
+    cMapUrl,
+    standardFontDataUrl,
     isEvalSupported: false,
   }).promise;
 
