@@ -1,20 +1,22 @@
-const pdfjsPath = (path) =>
+const _defaultPdfjsPath = (path) =>
   new URL(`./vendor/pdfjs/${path}`, import.meta.url).toString();
+
+export const config = {
+  pdfjsPath: _defaultPdfjsPath,
+};
 
 import "./vendor/pdfjs/pdf.mjs";
 const pdfjsLib = globalThis.pdfjsLib;
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath("pdf.worker.mjs");
+pdfjsLib.GlobalWorkerOptions.workerSrc = _defaultPdfjsPath("pdf.worker.mjs");
 
 const fetchText = async (url) => await (await fetch(url)).text();
 
-// https://raw.githubusercontent.com/mozilla/pdf.js/refs/tags/v5.5.207/web/text_layer_builder.css
 const textLayerBuilderCSS = await fetchText(
-  pdfjsPath("text_layer_builder.css"),
+  _defaultPdfjsPath("text_layer_builder.css"),
 );
 
-// https://raw.githubusercontent.com/mozilla/pdf.js/refs/tags/v5.5.207/web/annotation_layer_builder.css
 const annotationLayerBuilderCSS = await fetchText(
-  pdfjsPath("annotation_layer_builder.css"),
+  _defaultPdfjsPath("annotation_layer_builder.css"),
 );
 
 const render = async (page, doc, zoom) => {
@@ -130,8 +132,8 @@ const makeTOCItem = (item) => ({
 });
 
 export const makePDF = async (file, options = {}) => {
-  const cMapUrl = options.cMapUrl ?? pdfjsPath("cmaps/");
-  const standardFontDataUrl = options.standardFontDataUrl ?? pdfjsPath("standard_fonts/");
+  const cMapUrl = options.cMapUrl ?? config.pdfjsPath("cmaps/");
+  const standardFontDataUrl = options.standardFontDataUrl ?? config.pdfjsPath("standard_fonts/");
   if (options.workerSrc) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = options.workerSrc;
   }
