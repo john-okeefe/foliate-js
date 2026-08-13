@@ -23,7 +23,7 @@ const getViewport = (doc, viewport) => {
 };
 
 export class FixedLayout extends HTMLElement {
-  static observedAttributes = ["zoom", "interaction-mode"];
+  static observedAttributes = ["zoom", "interaction-mode", "spread"];
   #root = this.attachShadow({ mode: "closed" });
   #observer = new ResizeObserver(() => this.#onResize());
   #spreads;
@@ -119,6 +119,10 @@ export class FixedLayout extends HTMLElement {
         if (value === "pan" || value === "select") {
           this.#interactionMode = value;
         }
+        break;
+      }
+      case "spread": {
+        this.#setSpread(value == null ? undefined : value);
         break;
       }
     }
@@ -492,8 +496,14 @@ export class FixedLayout extends HTMLElement {
 
   #handleMouseDown(event) {
     if (event.button !== 0) return;
-    if (this.#isPDF && this.#interactionMode === "select" && !event.shiftKey)
-      return false;
+    if (this.#isPDF && this.#interactionMode === "select" && !event.shiftKey) {
+      const t = event.realTarget;
+      if (
+        t?.closest?.(".textLayer span") ||
+        t?.closest?.(".annotationLayer a")
+      )
+        return false;
+    }
 
     this.#dragState.startX = event.clientX;
     this.#dragState.startY = event.clientY;
@@ -643,6 +653,7 @@ export class FixedLayout extends HTMLElement {
       });
       mouseEvent.sourceIframe = frameId;
       mouseEvent.sourceFrame = frame;
+      mouseEvent.realTarget = event.target;
       const dragStarted = this.#handleMouseDown(mouseEvent);
       if (dragStarted) event.preventDefault();
     });
@@ -831,11 +842,15 @@ export class FixedLayout extends HTMLElement {
     this.spread = rendition?.spread;
     this.defaultViewport = rendition?.viewport;
 
-    const rtl = book.dir === "rtl";
-    const ltr = !rtl;
-    this.rtl = rtl;
+    this.rtl = book.dir === "rtl";
+    this.#computeSpreads();
+  }
 
-    if (rendition?.spread === "none")
+  #computeSpreads() {
+    const { book } = this;
+    const rtl = this.rtl;
+    const ltr = !rtl;
+    if (this.spread === "none")
       this.#spreads = book.sections.map((section) => ({ center: section }));
     else
       this.#spreads = book.sections.reduce(
@@ -871,6 +886,16 @@ export class FixedLayout extends HTMLElement {
         },
         [{}],
       );
+  }
+
+  #setSpread(value) {
+    this.spread = value;
+    const currentSection =
+      this.book?.sections[this.index] ?? this.book?.sections[0];
+    this.#computeSpreads();
+    const resolved = currentSection ? this.getSpreadOf(currentSection) : null;
+    if (resolved) this.goToSpread(resolved.index, resolved.side, "page");
+    else this.#render();
   }
 
   get index() {
