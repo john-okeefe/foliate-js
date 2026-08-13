@@ -76,7 +76,7 @@ const fetchFile = async url => {
     return new File([await res.blob()], new URL(res.url).pathname)
 }
 
-export const makeBook = async file => {
+export const makeBook = async (file, options = {}) => {
     if (typeof file === 'string') file = await fetchFile(file)
     let book
     if (file.isDirectory) {
@@ -105,7 +105,7 @@ export const makeBook = async file => {
     }
     else if (await isPDF(file)) {
         const { makePDF } = await import('./pdf.js')
-        book = await makePDF(file)
+        book = await makePDF(file, options.pdf)
     }
     else {
         const { isMOBI, MOBI } = await import('./mobi.js')
@@ -230,10 +230,10 @@ export class View extends HTMLElement {
             this.renderer.goTo(resolved)
         })
     }
-    async open(book) {
+    async open(book, options = {}) {
         if (typeof book === 'string'
         || typeof book.arrayBuffer === 'function'
-        || book.isDirectory) book = await makeBook(book)
+        || book.isDirectory) book = await makeBook(book, options)
         this.book = book
         this.language = languageInfo(book.metadata?.language)
 
