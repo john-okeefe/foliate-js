@@ -890,9 +890,10 @@ export class FixedLayout extends HTMLElement {
 
   #setSpread(value) {
     this.spread = value;
-    const currentSection =
-      this.book?.sections[this.index] ?? this.book?.sections[0];
+    const started = this.#index >= 0;
+    const currentSection = started ? this.book?.sections[this.index] : null;
     this.#computeSpreads();
+    if (!started) return;
     const resolved = currentSection ? this.getSpreadOf(currentSection) : null;
     if (resolved) this.goToSpread(resolved.index, resolved.side, "page");
     else this.#render();
