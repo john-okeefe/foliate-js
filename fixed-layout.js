@@ -116,7 +116,7 @@ export class FixedLayout extends HTMLElement {
         break;
       }
       case "interaction-mode": {
-        if (value === "pan" || value === "select") {
+        if (value === "pan" || value === "select" || value === "text") {
           this.#interactionMode = value;
         }
         break;
@@ -496,6 +496,8 @@ export class FixedLayout extends HTMLElement {
 
   #handleMouseDown(event) {
     if (event.button !== 0) return;
+    if (this.#isPDF && this.#interactionMode === "text" && !event.shiftKey)
+      return false;
     if (this.#isPDF && this.#interactionMode === "select" && !event.shiftKey) {
       const t = event.realTarget;
       if (
