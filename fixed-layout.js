@@ -57,6 +57,25 @@ export class FixedLayout extends HTMLElement {
     startTY: 0,
   };
   dragOffset = { x: 0, y: 0 };
+  #touchState = {
+    mode: null, // null | "pending" | "pan" | "pinch" | "swipe" | "native"
+    id: null,
+    realTarget: null,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    startTX: 0,
+    startTY: 0,
+    startTime: 0,
+    startDist: 0,
+    startScale: 1,
+    lastMidX: 0,
+    lastMidY: 0,
+    lastTapTime: 0,
+    lastTapX: 0,
+    lastTapY: 0,
+  };
   #magnifier = {
     enabled: false,
     size: 150,
@@ -75,6 +94,7 @@ export class FixedLayout extends HTMLElement {
             display: block;
             overflow: hidden;
             position: relative;
+            touch-action: none;
         }`);
 
     this.#wrapper = document.createElement("div");
@@ -88,6 +108,22 @@ export class FixedLayout extends HTMLElement {
     this.#root.appendChild(this.#wrapper);
 
     this.#observer.observe(this);
+
+    // Touch gestures: pinch-zoom, two-finger pan, single-finger pan while
+    // zoomed, swipe page-turn at fit, double-tap zoom toggle. Page iframes
+    // forward their touch events here (see #attachEventListenersToIframe).
+    this.addEventListener("touchstart", this.#onTouchStart.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchmove", this.#onTouchMove.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchend", this.#onTouchEnd.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchcancel", this.#onTouchCancel.bind(this), {
+      passive: false,
+    });
   }
 
   attributeChangedCallback(name, _, value) {
@@ -546,6 +582,184 @@ export class FixedLayout extends HTMLElement {
     }
   }
 
+  // ----- touch gestures -----
+
+  #atFitScale() {
+    return this.#zoom == null;
+  }
+
+  #touchStartsOnSelectable(target) {
+    if (!this.#isPDF || this.#interactionMode === "pan") return false;
+    return !!target?.closest?.(".textLayer span, .annotationLayer a");
+  }
+
+  #getPinchInfo(touches) {
+    const [a, b] = touches;
+    return {
+      dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+      midX: (a.clientX + b.clientX) / 2,
+      midY: (a.clientY + b.clientY) / 2,
+    };
+  }
+
+  #onTouchStart(event) {
+    if (this.hasAttribute("panel-mode")) return;
+    const st = this.#touchState;
+    if (event.touches.length === 1) {
+      const t = event.touches[0];
+      st.mode = "pending";
+      st.id = t.identifier;
+      st.realTarget = event.realTarget ?? event.target ?? null;
+      st.startX = t.clientX;
+      st.startY = t.clientY;
+      st.lastX = t.clientX;
+      st.lastY = t.clientY;
+      st.startTX = this.#transform.x;
+      st.startTY = this.#transform.y;
+      st.startTime = Date.now();
+    } else if (event.touches.length >= 2) {
+      // A second finger always upgrades to pinch (cancels pan/swipe).
+      const { dist, midX, midY } = this.#getPinchInfo(event.touches);
+      st.mode = "pinch";
+      st.startDist = dist;
+      st.startScale = this.#transform.scale;
+      st.lastMidX = midX;
+      st.lastMidY = midY;
+      event.preventDefault();
+    }
+  }
+
+  #onTouchMove(event) {
+    const st = this.#touchState;
+    if (!st.mode) return;
+
+    if (st.mode === "pinch") {
+      if (event.touches.length < 2) return;
+      const { dist, midX, midY } = this.#getPinchInfo(event.touches);
+      const rect = this.getBoundingClientRect();
+      if (dist > 0 && st.startDist > 0) {
+        const target = dist / st.startDist * st.startScale;
+        const ratio = target / this.#transform.scale;
+        this.#zoomByRatio(midX - rect.left, midY - rect.top, ratio);
+      }
+      // two-finger pan: follow the midpoint
+      this.#transform.x += midX - st.lastMidX;
+      this.#transform.y += midY - st.lastMidY;
+      this.#applyTransform();
+      st.lastMidX = midX;
+      st.lastMidY = midY;
+      event.preventDefault();
+      return;
+    }
+
+    const t = [...event.touches].find((x) => x.identifier === st.id);
+    if (!t) return;
+
+    if (st.mode === "pending") {
+      if (Math.hypot(t.clientX - st.startX, t.clientY - st.startY) < 10)
+        return;
+      // Gesture decided on first significant movement.
+      if (this.#touchStartsOnSelectable(st.realTarget)) {
+        st.mode = "native"; // let the text layer handle selection
+        return;
+      }
+      if (this.#atFitScale()) {
+        st.mode = "swipe"; // page-turn gesture
+      } else {
+        st.mode = "pan";
+        this.style.cursor = "grabbing";
+      }
+    }
+
+    if (st.mode === "pan") {
+      this.#transform.x = st.startTX + (t.clientX - st.startX);
+      this.#transform.y = st.startTY + (t.clientY - st.startY);
+      this.#applyTransform();
+      event.preventDefault();
+    } else if (st.mode === "swipe") {
+      event.preventDefault();
+    }
+  }
+
+  #onTouchEnd(event) {
+    const st = this.#touchState;
+    if (!st.mode) return;
+
+    if (st.mode === "pinch") {
+      if (event.touches.length === 1) {
+        // continue as a single-finger pan with the remaining finger
+        const t = event.touches[0];
+        st.mode = "pan";
+        st.id = t.identifier;
+        st.startX = t.clientX;
+        st.startY = t.clientY;
+        st.startTX = this.#transform.x;
+        st.startTY = this.#transform.y;
+      } else if (event.touches.length === 0) {
+        st.mode = null;
+      }
+      return;
+    }
+
+    if (st.mode === "pan") {
+      if (event.touches.length === 0) {
+        st.mode = null;
+        this.style.cursor = "";
+      }
+      return;
+    }
+
+    if (st.mode === "swipe") {
+      const t = [...event.changedTouches].find(
+        (x) => x.identifier === st.id,
+      );
+      const dx = (t?.clientX ?? st.startX) - st.startX;
+      const dy = (t?.clientY ?? st.startY) - st.startY;
+      st.mode = null;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+        // Finger direction maps through next()/prev() so RTL (manga)
+        // reads correctly: forward is a left swipe in LTR, right in RTL.
+        if ((dx < 0) !== this.rtl) this.next();
+        else this.prev();
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (st.mode === "pending") {
+      // no significant movement: a tap. Double-tap toggles zoom.
+      const t = [...event.changedTouches].find(
+        (x) => x.identifier === st.id,
+      );
+      const x = t?.clientX ?? st.startX;
+      const y = t?.clientY ?? st.startY;
+      const now = Date.now();
+      const rect = this.getBoundingClientRect();
+      st.mode = null;
+      if (
+        now - st.lastTapTime < 300 &&
+        Math.hypot(x - st.lastTapX, y - st.lastTapY) < 30
+      ) {
+        st.lastTapTime = 0;
+        if (this.#atFitScale()) {
+          this.#zoomByRatio(x - rect.left, y - rect.top, 2.5);
+        } else {
+          this.resetZoom();
+        }
+        event.preventDefault();
+      } else {
+        st.lastTapTime = now;
+        st.lastTapX = x;
+        st.lastTapY = y;
+      }
+    }
+  }
+
+  #onTouchCancel() {
+    this.#touchState.mode = null;
+    this.style.cursor = "";
+  }
+
   async #createFrame({ index, src: srcOption }, frameId) {
     const srcOptionIsString = typeof srcOption === "string";
     const src = srcOptionIsString ? srcOption : srcOption?.src;
@@ -592,17 +806,18 @@ export class FixedLayout extends HTMLElement {
   }
 
   #attachEventListenersToIframe(doc, frameId, frame) {
-    const convertCoords = (e) => {
+    const convertPoint = (x, y) => {
       const iframeRect = frame.iframe.getBoundingClientRect();
       const flRect = this.getBoundingClientRect();
       const scaleX = iframeRect.width / (doc.documentElement.clientWidth || 1);
       const scaleY =
         iframeRect.height / (doc.documentElement.clientHeight || 1);
       return {
-        clientX: iframeRect.left - flRect.left + e.clientX * scaleX,
-        clientY: iframeRect.top - flRect.top + e.clientY * scaleY,
+        clientX: iframeRect.left - flRect.left + x * scaleX,
+        clientY: iframeRect.top - flRect.top + y * scaleY,
       };
     };
+    const convertCoords = (e) => convertPoint(e.clientX, e.clientY);
     if (!doc) return;
 
     const images = doc.querySelectorAll("img");
@@ -612,6 +827,49 @@ export class FixedLayout extends HTMLElement {
       img.style.webkitUserDrag = "none";
       img.style.WebkitUserDrag = "none";
     });
+
+    // Forward touches to the host gesture engine with converted
+    // coordinates. Handlers decide whether to preventDefault (pan/pinch/
+    // swipe) or let the iframe handle it natively (text selection, taps).
+    const forwardTouches = (list) =>
+      [...list].map((t) => {
+        const p = convertPoint(t.clientX, t.clientY);
+        return { identifier: t.identifier, ...p };
+      });
+    const synthTouch = (event) => ({
+      touches: forwardTouches(event.touches),
+      changedTouches: forwardTouches(event.changedTouches),
+      realTarget: event.target,
+      preventDefault: () => event.preventDefault(),
+    });
+    doc.addEventListener(
+      "touchstart",
+      (event) => {
+        this.#onTouchStart(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchmove",
+      (event) => {
+        this.#onTouchMove(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchend",
+      (event) => {
+        this.#onTouchEnd(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchcancel",
+      (event) => {
+        this.#onTouchCancel(synthTouch(event));
+      },
+      { passive: false },
+    );
 
     doc.addEventListener(
       "wheel",

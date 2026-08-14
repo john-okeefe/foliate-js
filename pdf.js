@@ -100,6 +100,7 @@ const renderPage = async (page, getImageBlob) => {
         html, body {
             margin: 0;
             padding: 0;
+            touch-action: none;
         }
         /*
         https://github.com/mozilla/pdf.js/commit/bd05b255fabfc313b194bfe9a17ccded4d90fb5a
