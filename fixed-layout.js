@@ -57,6 +57,10 @@ export class FixedLayout extends HTMLElement {
     startTY: 0,
   };
   dragOffset = { x: 0, y: 0 };
+  // Rect annotations (PDF text highlights; comic regions later). Keyed by
+  // host-supplied id, stored as page-fraction rects so they survive iframe
+  // CSS-scaling and PDF hi-res re-renders without any re-anchoring work.
+  #rectAnnotations = new Map();
   #touchState = {
     mode: null, // null | "pending" | "pan" | "pinch" | "swipe" | "native"
     id: null,
@@ -760,6 +764,73 @@ export class FixedLayout extends HTMLElement {
     this.style.cursor = "";
   }
 
+  // ----- rect annotations -----
+
+  #frameForIndex(index) {
+    for (const frame of [this.#left, this.#right, this.#center]) {
+      if (frame && !frame.blank && frame.index === index) return frame;
+    }
+    return null;
+  }
+
+  // Full-bleed SVG in the page iframe with a 0-100 viewBox and
+  // preserveAspectRatio:none: fraction-space rects render at any scale,
+  // so iframe CSS-zoom (comics) and PDF re-renders need no re-anchoring.
+  #ensureOverlay(doc) {
+    if (!doc?.body) return null;
+    let svg = doc.getElementById("foliate-rect-overlay");
+    if (!svg) {
+      const NS = "http://www.w3.org/2000/svg";
+      svg = doc.createElementNS(NS, "svg");
+      svg.id = "foliate-rect-overlay";
+      svg.setAttribute("viewBox", "0 0 100 100");
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.style.cssText = `position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;`;
+      doc.body.appendChild(svg);
+    }
+    return svg;
+  }
+
+  #renderAnnotationsInto(doc, index) {
+    const svg = this.#ensureOverlay(doc);
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    svg.replaceChildren();
+    for (const a of this.#rectAnnotations.values()) {
+      if (a.index !== index) continue;
+      for (const [x, y, w, h] of a.rects) {
+        const rect = doc.createElementNS(NS, "rect");
+        rect.setAttribute("x", String(x * 100));
+        rect.setAttribute("y", String(y * 100));
+        rect.setAttribute("width", String(w * 100));
+        rect.setAttribute("height", String(h * 100));
+        rect.setAttribute("fill", a.color || "#ffd54f");
+        rect.setAttribute("fill-opacity", "0.35");
+        svg.appendChild(rect);
+      }
+    }
+  }
+
+  #renderAnnotationsForIndex(index) {
+    const frame = this.#frameForIndex(index);
+    const doc = frame?.iframe?.contentDocument;
+    if (doc) this.#renderAnnotationsInto(doc, index);
+  }
+
+  addRectAnnotation({ key, index, rects, color }) {
+    if (!key || index == null || !Array.isArray(rects) || !rects.length)
+      return;
+    this.#rectAnnotations.set(key, { index, rects, color });
+    this.#renderAnnotationsForIndex(index);
+  }
+
+  removeRectAnnotation(key) {
+    const a = this.#rectAnnotations.get(key);
+    if (!a) return;
+    this.#rectAnnotations.delete(key);
+    this.#renderAnnotationsForIndex(a.index);
+  }
+
   async #createFrame({ index, src: srcOption }, frameId) {
     const srcOptionIsString = typeof srcOption === "string";
     const src = srcOptionIsString ? srcOption : srcOption?.src;
@@ -777,7 +848,8 @@ export class FixedLayout extends HTMLElement {
     iframe.setAttribute("scrolling", "no");
     iframe.setAttribute("part", "filter");
     this.#wrapper.append(element);
-    if (!src) return { blank: true, element, iframe, frameId };
+    if (!src)
+      return { blank: true, element, iframe, frameId, index, onZoom };
     return new Promise((resolve) => {
       iframe.addEventListener(
         "load",
@@ -788,7 +860,14 @@ export class FixedLayout extends HTMLElement {
           );
           const { width, height } = getViewport(doc, this.defaultViewport);
 
-          this.#attachEventListenersToIframe(doc, frameId, { element, iframe });
+          this.#attachEventListenersToIframe(doc, frameId, {
+            element,
+            iframe,
+            index,
+          });
+          // Re-render persisted annotations into the fresh document
+          // (frames are recreated on every spread change).
+          this.#renderAnnotationsInto(doc, index);
 
           resolve({
             element,
@@ -797,6 +876,7 @@ export class FixedLayout extends HTMLElement {
             height: parseFloat(height),
             onZoom,
             frameId,
+            index,
           });
         },
         { once: true },
@@ -869,6 +949,38 @@ export class FixedLayout extends HTMLElement {
         this.#onTouchCancel(synthTouch(event));
       },
       { passive: false },
+    );
+
+    // Click hit-testing for rect annotations (edit popover). Skipped while a
+    // text selection is active so drag-selecting doesn't pop the editor.
+    doc.addEventListener(
+      "click",
+      (event) => {
+        if (!this.#rectAnnotations.size || frame.index == null) return;
+        const sel = doc.getSelection();
+        if (sel && !sel.isCollapsed) return;
+        const denom =
+          doc.querySelector("img") || doc.documentElement;
+        const dr = denom.getBoundingClientRect();
+        if (!dr.width || !dr.height) return;
+        const fx = (event.clientX - dr.left) / dr.width;
+        const fy = (event.clientY - dr.top) / dr.height;
+        for (const [key, a] of this.#rectAnnotations) {
+          if (a.index !== frame.index) continue;
+          for (const [x, y, w, h] of a.rects) {
+            if (fx >= x && fx <= x + w && fy >= y && fy <= y + h) {
+              const { clientX, clientY } = convertCoords(event);
+              this.dispatchEvent(
+                new CustomEvent("show-rect-annotation", {
+                  detail: { key, index: a.index, clientX, clientY },
+                }),
+              );
+              return;
+            }
+          }
+        }
+      },
+      false,
     );
 
     doc.addEventListener(
