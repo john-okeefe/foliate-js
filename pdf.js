@@ -154,7 +154,7 @@ export const makePDF = async (file, options = {}) => {
     isEvalSupported: false,
   }).promise;
 
-  const book = { rendition: { layout: "pre-paginated" } };
+  const book = { rendition: { layout: "pre-paginated" }, pdf };
 
   const { metadata, info } = (await pdf.getMetadata()) ?? {};
   // TODO: for better results, parse `metadata.getRaw()`
