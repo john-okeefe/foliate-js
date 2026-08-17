@@ -193,6 +193,25 @@ export class FixedLayout extends HTMLElement {
     this.#render();
   }
 
+  // Reset pan while keeping the current zoom: the wrapper's base layout
+  // already centers the spread, so translate(0,0) recenters it. Re-syncs
+  // #side afterwards (same rule as drag-end) so next()/prev() stay sane.
+  recenter() {
+    this.#transform.x = 0;
+    this.#transform.y = 0;
+    this.#applyTransform();
+    if (
+      !this.#center &&
+      !this.#left?.blank &&
+      !this.#right?.blank &&
+      !this.#portrait
+    ) {
+      const leftWidth = (this.#left.width ?? 0) * this.#transform.scale;
+      const viewportCenterInWrapper = this.getBoundingClientRect().width / 2;
+      this.#side = viewportCenterInWrapper < leftWidth ? "left" : "right";
+    }
+  }
+
   toggleMagnifier() {
     this.#magnifier.enabled = !this.#magnifier.enabled;
 
