@@ -961,6 +961,9 @@ export class FixedLayout extends HTMLElement {
 
     // Click hit-testing for rect annotations (edit popover). Skipped while a
     // text selection is active so drag-selecting doesn't pop the editor.
+    // Denominator: the rendered canvas for PDFs (its post-transform rect IS
+    // the visible page; documentElement is dpr× too small because pdf.js
+    // scales <html> by 1/devicePixelRatio), the img for comics.
     doc.addEventListener(
       "click",
       (event) => {
@@ -968,9 +971,10 @@ export class FixedLayout extends HTMLElement {
         const sel = doc.getSelection();
         if (sel && !sel.isCollapsed) return;
         const denom =
-          doc.querySelector("img") || doc.documentElement;
-        const dr = denom.getBoundingClientRect();
-        if (!dr.width || !dr.height) return;
+          doc.querySelector("#canvas canvas") ||
+          doc.querySelector("img");
+        const dr = denom?.getBoundingClientRect();
+        if (!dr || !dr.width || !dr.height) return;
         const fx = (event.clientX - dr.left) / dr.width;
         const fy = (event.clientY - dr.top) / dr.height;
         for (const [key, a] of this.#rectAnnotations) {
