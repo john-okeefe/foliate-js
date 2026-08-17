@@ -773,48 +773,55 @@ export class FixedLayout extends HTMLElement {
     return null;
   }
 
-  // Full-bleed SVG in the page iframe with a 0-100 viewBox and
-  // preserveAspectRatio:none: fraction-space rects render at any scale,
-  // so iframe CSS-zoom (comics) and PDF re-renders need no re-anchoring.
-  #ensureOverlay(doc) {
-    if (!doc?.body) return null;
-    let svg = doc.getElementById("foliate-rect-overlay");
-    if (!svg) {
-      const NS = "http://www.w3.org/2000/svg";
-      svg = doc.createElementNS(NS, "svg");
-      svg.id = "foliate-rect-overlay";
-      svg.setAttribute("viewBox", "0 0 100 100");
-      svg.setAttribute("preserveAspectRatio", "none");
-      svg.style.cssText = `position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;`;
-      doc.body.appendChild(svg);
+  // Host-side overlay: a div inside the frame's wrapper element, children
+  // positioned in percentages of the element box (which always equals the
+  // visible page area). This is immune to iframe-internal transforms
+  // (pdf.js scales <html> by 1/devicePixelRatio, which would shrink an
+  // in-document overlay), comic iframe CSS-scaling, PDF hi-res re-renders,
+  // and the host transform-based pan/zoom — no re-anchoring anywhere.
+  #ensureOverlay(frame) {
+    if (!frame?.element) return null;
+    let overlay = frame.element.querySelector(
+      ":scope > .foliate-rect-overlay",
+    );
+    if (!overlay) {
+      overlay = frame.element.ownerDocument.createElement("div");
+      overlay.className = "foliate-rect-overlay";
+      overlay.style.cssText =
+        "position:absolute;inset:0;pointer-events:none;";
+      frame.element.style.position = "relative";
+      frame.element.appendChild(overlay);
     }
-    return svg;
+    return overlay;
   }
 
-  #renderAnnotationsInto(doc, index) {
-    const svg = this.#ensureOverlay(doc);
-    if (!svg) return;
-    const NS = "http://www.w3.org/2000/svg";
-    svg.replaceChildren();
+  #renderAnnotationsIntoFrame(frame) {
+    if (!frame || frame.blank || frame.index == null) return;
+    const overlay = this.#ensureOverlay(frame);
+    if (!overlay) return;
+    const doc = frame.element.ownerDocument;
+    overlay.replaceChildren();
     for (const a of this.#rectAnnotations.values()) {
-      if (a.index !== index) continue;
+      if (a.index !== frame.index) continue;
       for (const [x, y, w, h] of a.rects) {
-        const rect = doc.createElementNS(NS, "rect");
-        rect.setAttribute("x", String(x * 100));
-        rect.setAttribute("y", String(y * 100));
-        rect.setAttribute("width", String(w * 100));
-        rect.setAttribute("height", String(h * 100));
-        rect.setAttribute("fill", a.color || "#ffd54f");
-        rect.setAttribute("fill-opacity", "0.35");
-        svg.appendChild(rect);
+        const rect = doc.createElement("div");
+        Object.assign(rect.style, {
+          position: "absolute",
+          left: `${x * 100}%`,
+          top: `${y * 100}%`,
+          width: `${w * 100}%`,
+          height: `${h * 100}%`,
+          backgroundColor: a.color || "#ffd54f",
+          opacity: "0.35",
+          borderRadius: "2px",
+        });
+        overlay.appendChild(rect);
       }
     }
   }
 
   #renderAnnotationsForIndex(index) {
-    const frame = this.#frameForIndex(index);
-    const doc = frame?.iframe?.contentDocument;
-    if (doc) this.#renderAnnotationsInto(doc, index);
+    this.#renderAnnotationsIntoFrame(this.#frameForIndex(index));
   }
 
   addRectAnnotation({ key, index, rects, color }) {
@@ -865,9 +872,10 @@ export class FixedLayout extends HTMLElement {
             iframe,
             index,
           });
-          // Re-render persisted annotations into the fresh document
-          // (frames are recreated on every spread change).
-          this.#renderAnnotationsInto(doc, index);
+          // Re-render persisted annotations into the fresh frame (frames
+          // are recreated on every spread change; the spread fields aren't
+          // assigned yet, so pass the frame under construction directly).
+          this.#renderAnnotationsIntoFrame({ element, iframe, index });
 
           resolve({
             element,
