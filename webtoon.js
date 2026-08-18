@@ -9,7 +9,7 @@ export class Webtoon extends HTMLElement {
   #pages = [];
   #index = -1;
   #firstNav = true;
-  #loadIO = null;
+  #connected = false;
   #scrollRaf = null;
 
   constructor() {
@@ -57,28 +57,24 @@ export class Webtoon extends HTMLElement {
       el.dataset.index = i;
       el.style.minHeight = `${minH}px`;
       frag.append(el);
-      return { el, section, loaded: false, img: null };
+      return { el, section, loaded: false, img: null, loading: false };
     });
     this.#root.append(frag);
+    // Loading is driven from scroll position (#updateIndex), not an
+    // IntersectionObserver: IO with a shadow-host root proved unreliable
+    // in Chromium and would leave pages permanently blank.
+    if (this.#connected) this.#updateIndex();
+  }
 
-    this.#loadIO = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          this.#loadIO.unobserve(entry.target);
-          this.#loadPage(Number(entry.target.dataset.index));
-        }
-      },
-      // generous margin so pages are ready before they scroll into view
-      { root: this, rootMargin: "150% 0%" },
-    );
-    for (const p of this.#pages) this.#loadIO.observe(p.el);
+  connectedCallback() {
+    this.#connected = true;
+    if (this.#pages.length) this.#updateIndex();
   }
 
   async #loadPage(i) {
     const p = this.#pages[i];
-    if (!p || p.loaded) return;
-    p.loaded = true;
+    if (!p || p.loaded || p.loading) return;
+    p.loading = true;
     try {
       const url = await p.section.load?.();
       if (!url) return;
@@ -97,10 +93,19 @@ export class Webtoon extends HTMLElement {
       p.el.style.minHeight = "0";
       p.el.append(img);
       p.img = img;
+      p.loaded = true;
     } catch (e) {
-      p.loaded = false;
       console.warn("webtoon: failed to load page", i + 1, e);
+    } finally {
+      p.loading = false;
     }
+  }
+
+  // Load a window around the reading position (a few pages of lookahead).
+  #loadAround(idx) {
+    const start = Math.max(0, idx - 2);
+    const end = Math.min(this.#pages.length - 1, idx + 4);
+    for (let i = start; i <= end; i++) this.#loadPage(i);
   }
 
   // Free far-away pages (images + their blob URLs) while keeping the
@@ -114,7 +119,6 @@ export class Webtoon extends HTMLElement {
         p.img = null;
         p.loaded = false;
         p.section.unload?.();
-        this.#loadIO.observe(p.el);
       }
     }
   }
@@ -152,6 +156,7 @@ export class Webtoon extends HTMLElement {
       this.#index = idx;
       this.#unloadFar(idx);
     }
+    this.#loadAround(idx);
     this.#report(fraction);
   }
 
@@ -217,7 +222,6 @@ export class Webtoon extends HTMLElement {
   }
 
   destroy() {
-    this.#loadIO?.disconnect();
   }
 }
 
