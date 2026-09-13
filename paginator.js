@@ -981,7 +981,7 @@ export class Paginator extends HTMLElement {
         if (!sel.rangeCount) return
         const backward = selectionIsBackward(sel)
         const probe = sel.getRangeAt(0).cloneRange()
-        probe.collapse(!backward)
+        probe.collapse(backward)
         const rect = probe.getBoundingClientRect()
         if (!rect || (rect.width === 0 && rect.height === 0 && !rect.x && !rect.y))
             return
