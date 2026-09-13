@@ -960,20 +960,18 @@ export class Paginator extends HTMLElement {
             this.start - size, this.end - size, this.#getRectMapper())
     }
     #clampTouchSelection(sel, doc) {
-        const range = this.#lastVisibleRange
-        if (!range || !sel.rangeCount) return
+        if (!sel.rangeCount) return
         const backward = selectionIsBackward(sel)
         const probe = sel.getRangeAt(0).cloneRange()
         probe.collapse(!backward)
-        if (backward
-            ? range.compareBoundaryPoints(Range.START_TO_START, probe) <= 0
-            : range.compareBoundaryPoints(Range.END_TO_END, probe) >= 0) return
         const rect = probe.getBoundingClientRect()
-        if (!rect) return
+        if (!rect || (rect.width === 0 && rect.height === 0 && !rect.x && !rect.y))
+            return
         const size = this.#rtl ? -this.size : this.size
-        const x = backward
-            ? this.start - size + 1
-            : this.end - size - 1
+        const left = this.start - size
+        const right = this.end - size
+        if (backward ? rect.left >= left : rect.left <= right) return
+        const x = backward ? left + 1 : right - 1
         const caret = doc.caretRangeFromPoint?.(x, rect.top)
             ?? doc.caretPositionFromPoint?.(x, rect.top)
         if (!caret) return
