@@ -613,8 +613,22 @@ export class Paginator extends HTMLElement {
                 if (!range) return
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
-                if (touchSelecting && sel.type === 'Range')
+                if (touchSelecting && sel.type === 'Range') {
                     this.#clampTouchSelection(sel, doc)
+                    // Chrome ignores (or re-maps) selection writes made from
+                    // JS while the touch selection gesture is active, and no
+                    // pointer or touch event reaches the document when the
+                    // finger lifts after the takeover — the only signal is
+                    // the last selectionchange, mid-gesture. Retry after the
+                    // gesture has most likely ended.
+                    const clampLater = () => {
+                        const s = doc.getSelection()
+                        if (s && s.rangeCount && s.type === 'Range')
+                            this.#clampTouchSelection(s, doc)
+                    }
+                    setTimeout(clampLater, 150)
+                    setTimeout(clampLater, 500)
+                }
                 if (isPointerSelecting && sel.type === 'Range')
                     checkPointerSelection(range, sel)
                 else if (isKeyboardSelecting) {
