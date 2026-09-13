@@ -603,6 +603,7 @@ export class Paginator extends HTMLElement {
             doc.addEventListener('pointerdown', e => {
                 touchSelecting = e.pointerType === 'touch'
             })
+            doc.addEventListener('keydown', () => touchSelecting = false)
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -612,11 +613,8 @@ export class Paginator extends HTMLElement {
                 if (!range) return
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
-                if (touchSelecting) {
-                    if (sel.isCollapsed) touchSelecting = false
-                    else if (sel.type === 'Range')
-                        this.#clampTouchSelection(sel, doc)
-                }
+                if (touchSelecting && sel.type === 'Range')
+                    this.#clampTouchSelection(sel, doc)
                 if (isPointerSelecting && sel.type === 'Range')
                     checkPointerSelection(range, sel)
                 else if (isKeyboardSelecting) {
