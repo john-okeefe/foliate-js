@@ -151,7 +151,11 @@ const getVisibleRange = (doc, start, end, mapRect) => {
 }
 
 const selectionIsBackward = sel => {
-    const range = document.createRange()
+    // the selection may live in an iframe document while this module runs
+    // in the host document; create the range in the selection's own
+    // document or the boundary points cannot be compared
+    const doc = sel.anchorNode?.ownerDocument ?? document
+    const range = doc.createRange()
     range.setStart(sel.anchorNode, sel.anchorOffset)
     range.setEnd(sel.focusNode, sel.focusOffset)
     return range.collapsed
