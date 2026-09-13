@@ -599,6 +599,10 @@ export class Paginator extends HTMLElement {
             })
             doc.addEventListener('pointerup', () => isPointerSelecting = false)
             doc.addEventListener('pointercancel', () => isPointerSelecting = false)
+            let touchSelecting = false
+            doc.addEventListener('pointerdown', e => {
+                touchSelecting = e.pointerType === 'touch'
+            })
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -608,6 +612,11 @@ export class Paginator extends HTMLElement {
                 if (!range) return
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
+                if (touchSelecting) {
+                    if (sel.isCollapsed) touchSelecting = false
+                    else if (sel.type === 'Range')
+                        this.#clampTouchSelection(sel, doc)
+                }
                 if (isPointerSelecting && sel.type === 'Range')
                     checkPointerSelection(range, sel)
                 else if (isKeyboardSelecting) {
@@ -951,6 +960,25 @@ export class Paginator extends HTMLElement {
         const size = this.#rtl ? -this.size : this.size
         return getVisibleRange(this.#view.document,
             this.start - size, this.end - size, this.#getRectMapper())
+    }
+    #clampTouchSelection(sel, doc) {
+        const range = this.#lastVisibleRange
+        if (!range || !sel.rangeCount) return
+        const backward = selectionIsBackward(sel)
+        const probe = sel.getRangeAt(0).cloneRange()
+        probe.collapse(!backward)
+        if (backward
+            ? range.compareBoundaryPoints(Range.START_TO_START, probe) <= 0
+            : range.compareBoundaryPoints(Range.END_TO_END, probe) >= 0) return
+        const rect = probe.getBoundingClientRect()
+        if (!rect) return
+        const x = backward ? this.start + 1 : this.end - 1
+        const caret = doc.caretRangeFromPoint?.(x, rect.top)
+            ?? doc.caretPositionFromPoint?.(x, rect.top)
+        if (!caret) return
+        const node = caret.startContainer ?? caret.offsetNode
+        const offset = caret.startOffset ?? caret.offset
+        if (node) sel.extend(node, offset)
     }
     #afterScroll(reason) {
         const range = this.#getVisibleRange()
