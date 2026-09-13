@@ -972,7 +972,10 @@ export class Paginator extends HTMLElement {
             : range.compareBoundaryPoints(Range.END_TO_END, probe) >= 0) return
         const rect = probe.getBoundingClientRect()
         if (!rect) return
-        const x = backward ? this.start + 1 : this.end - 1
+        const size = this.#rtl ? -this.size : this.size
+        const x = backward
+            ? this.start - size + 1
+            : this.end - size - 1
         const caret = doc.caretRangeFromPoint?.(x, rect.top)
             ?? doc.caretPositionFromPoint?.(x, rect.top)
         if (!caret) return
