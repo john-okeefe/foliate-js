@@ -160,6 +160,19 @@ const selectionIsBackward = sel => {
     range.setEnd(sel.focusNode, sel.focusOffset)
     return range.collapsed
 }
+const wordAt = (doc, node, offset) => {
+    if (!node) return null
+    if (node.nodeType !== 3) return { node, offset }
+    const text = node.nodeValue
+    if (!text) return null
+    const isWord = c => /[\p{L}\p{N}]/u.test(c)
+    let start = Math.min(offset, text.length)
+    let end = start
+    while (start > 0 && isWord(text[start - 1])) start--
+    while (end < text.length && isWord(text[end])) end++
+    if (start === end) return { node, offset }
+    return { node, offset: start, endOffset: end }
+}
 
 const setSelectionTo = (target, collapse) => {
     let range
@@ -452,6 +465,7 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #touchSelActive
     #lastVisibleRange
     constructor() {
         super()
@@ -693,6 +707,97 @@ export class Paginator extends HTMLElement {
             doc.addEventListener('focusin', e => this.scrolled ? null :
                 // NOTE: `requestAnimationFrame` is needed in WebKit
                 requestAnimationFrame(() => this.#scrollToAnchor(e.target)))
+            // ----- custom touch selection -----
+            // Chrome's native touch selection is disabled for the paginated
+            // layout (preventDefault on touchstart): quick taps would select
+            // words, and dragging from a line-start word re-anchors at a
+            // rendered line break, dropping the word and freezing the
+            // gesture. Selection is built here instead: long-press selects
+            // the word under the finger, dragging extends it word by word,
+            // clamped to the visible page — identical for every word.
+            if (!this.scrolled) {
+                let gesture = null
+                const clearGesture = () => {
+                    if (gesture?.timer) clearTimeout(gesture.timer)
+                    gesture = null
+                    this.#touchSelActive = false
+                }
+                doc.addEventListener('touchstart', e => {
+                    const touch = e.changedTouches[0]
+                    if (!touch || e.touches.length !== 1) return clearGesture()
+                    e.preventDefault()
+                    const g = gesture = { x: touch.clientX, y: touch.clientY,
+                        id: touch.identifier, start: null, end: null, timer: null }
+                    g.timer = setTimeout(() => {
+                        if (gesture !== g) return
+                        const caret = this.#caretAt(g.x, g.y, doc)
+                        const word = caret && wordAt(doc, caret.node, caret.offset)
+                        if (!word || word.endOffset == null) {
+                            gesture = null
+                            return
+                        }
+                        const sel = doc.getSelection()
+                        sel.setBaseAndExtent(word.node, word.offset,
+                            word.node, word.endOffset)
+                        g.start = { node: word.node, offset: word.offset }
+                        g.end = { node: word.node, offset: word.endOffset }
+                        this.#touchSelActive = true
+                    }, 450)
+                }, { passive: false })
+                doc.addEventListener('touchmove', e => {
+                    const g = gesture
+                    if (!g) return
+                    const touch = [...e.changedTouches]
+                        .find(t => t.identifier === g.id)
+                    if (!touch) return
+                    if (!g.start) {
+                        // moving before the long-press engages: this is a
+                        // pan, stand down and let the paginator handle it
+                        if (Math.hypot(touch.clientX - g.x, touch.clientY - g.y) > 12)
+                            clearGesture()
+                        return
+                    }
+                    e.preventDefault()
+                    const caret = this.#caretAt(touch.clientX, touch.clientY, doc)
+                    if (!caret) return
+                    const word = wordAt(doc, caret.node, caret.offset)
+                    const end = word?.endOffset != null
+                        ? { node: word.node, offset: word.endOffset }
+                        : caret
+                    const startProbe = doc.createRange()
+                    startProbe.setStart(g.start.node, g.start.offset)
+                    startProbe.collapse(true)
+                    const endProbe = doc.createRange()
+                    endProbe.setStart(end.node, end.offset)
+                    endProbe.collapse(true)
+                    // whichever boundary of the long-pressed word keeps it
+                    // fully covered serves as the anchor
+                    const anchor = startProbe.compareBoundaryPoints(
+                        Range.START_TO_START, endProbe) > 0 ? g.end : g.start
+                    const sel = doc.getSelection()
+                    sel.setBaseAndExtent(anchor.node, anchor.offset,
+                        end.node, end.offset)
+                }, { passive: false })
+                doc.addEventListener('touchend', e => {
+                    const g = gesture
+                    const wasSelecting = !!g?.start
+                    clearGesture()
+                    if (wasSelecting || e.changedTouches.length !== 1) return
+                    const touch = e.changedTouches[0]
+                    const sel = doc.getSelection()
+                    if (sel && sel.rangeCount) {
+                        // a plain tap clears the selection instead of paging
+                        sel.removeAllRanges()
+                        return
+                    }
+                    // touchstart's preventDefault suppresses click events;
+                    // follow links directly
+                    const link = doc.elementFromPoint(touch.clientX, touch.clientY)
+                        ?.closest('a')
+                    link?.click()
+                })
+                doc.addEventListener('touchcancel', clearGesture)
+            }
         })
 
         this.#mediaQueryListener = () => {
@@ -909,6 +1014,7 @@ export class Paginator extends HTMLElement {
         if (state.pinched) return
         state.pinched = globalThis.visualViewport.scale > 1
         if (this.scrolled || state.pinched) return
+        if (this.#touchSelActive) return
         if (e.touches.length > 1) {
             if (this.#touchScrolled) e.preventDefault()
             return
@@ -928,7 +1034,7 @@ export class Paginator extends HTMLElement {
     }
     #onTouchEnd() {
         this.#touchScrolled = false
-        if (this.scrolled) return
+        if (this.scrolled || this.#touchSelActive) return
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at
@@ -1024,6 +1130,17 @@ export class Paginator extends HTMLElement {
         const size = this.#rtl ? -this.size : this.size
         return getVisibleRange(this.#view.document,
             this.start - size, this.end - size, this.#getRectMapper())
+    }
+    #caretAt(x, y, doc) {
+        const size = this.#rtl ? -this.size : this.size
+        const left = this.start - size
+        const right = this.end - size
+        const cx = Math.min(Math.max(x, left + 1), right - 1)
+        const caret = doc.caretRangeFromPoint?.(cx, y)
+            ?? doc.caretPositionFromPoint?.(cx, y)
+        if (!caret) return null
+        return { node: caret.startContainer ?? caret.offsetNode,
+            offset: caret.startOffset ?? caret.offset }
     }
     #clampTouchSelection(sel, doc) {
         if (!sel.rangeCount) return
