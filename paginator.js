@@ -611,29 +611,38 @@ export class Paginator extends HTMLElement {
             // The word selected by the initial long-press. Chrome can
             // re-anchor a touch drag at a rendered line break when the
             // finger crosses just past a line-start word, silently dropping
-            // that word from the selection; keep it covered.
+            // that word from the selection; keep it covered. The repair
+            // must never run while the gesture is still changing the
+            // selection: a write at the re-anchor moment detaches Chrome's
+            // touch selection controller and the selection stops following
+            // the finger. Focus-only writes on a settled selection are
+            // tolerated, so record here and repair only from the deferred,
+            // stability-gated callbacks below.
             let anchorWordStart = null
             doc.addEventListener('pointerdown', e => {
                 if (e.pointerType === 'touch') anchorWordStart = null
             })
-            const preserveAnchorWord = sel => {
-                if (!sel.rangeCount || sel.type !== 'Range') return
+            const recordAnchorWord = sel => {
+                if (anchorWordStart || !sel.rangeCount) return
                 const r = sel.getRangeAt(0)
-                if (!anchorWordStart) {
-                    anchorWordStart =
-                        { node: r.startContainer, offset: r.startOffset }
-                    return
-                }
+                anchorWordStart =
+                    { node: r.startContainer, offset: r.startOffset }
+            }
+            const repairAnchorWord = sel => {
+                if (!anchorWordStart || !sel.rangeCount
+                    || sel.type !== 'Range') return false
+                const r = sel.getRangeAt(0)
                 const probe = doc.createRange()
                 probe.setStart(anchorWordStart.node, anchorWordStart.offset)
                 probe.collapse(true)
                 if (r.compareBoundaryPoints(Range.START_TO_START, probe) <= 0)
-                    return
+                    return false
                 if (selectionIsBackward(sel))
                     sel.extend(probe.startContainer, probe.startOffset)
                 else
-                    sel.setBaseAndExtent(probe.startContainer, probe.startOffset,
-                        sel.focusNode, sel.focusOffset)
+                    sel.setBaseAndExtent(probe.startContainer,
+                        probe.startOffset, sel.focusNode, sel.focusOffset)
+                return true
             }
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
@@ -645,20 +654,29 @@ export class Paginator extends HTMLElement {
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
                 if (touchSelecting && sel.type === 'Range') {
-                    preserveAnchorWord(sel)
+                    recordAnchorWord(sel)
                     this.#clampTouchSelection(sel, doc)
                     // Chrome ignores (or re-maps) selection writes made from
                     // JS while the touch selection gesture is active, and no
                     // pointer or touch event reaches the document when the
                     // finger lifts after the takeover — the only signal is
                     // the last selectionchange, mid-gesture. Retry after the
-                    // gesture has most likely ended.
+                    // gesture has most likely ended, and only while the
+                    // selection is unchanged since the event that scheduled
+                    // the retry (an actively changing selection supersedes it
+                    // and owns the next retry).
+                    const snap = [sel.anchorNode, sel.anchorOffset,
+                        sel.focusNode, sel.focusOffset]
+                    const same = s => s.anchorNode === snap[0]
+                        && s.anchorOffset === snap[1]
+                        && s.focusNode === snap[2]
+                        && s.focusOffset === snap[3]
                     const clampLater = () => {
                         const s = doc.getSelection()
-                        if (s && s.rangeCount && s.type === 'Range') {
-                            preserveAnchorWord(s)
-                            this.#clampTouchSelection(s, doc)
-                        }
+                        if (!s || !s.rangeCount || s.type !== 'Range'
+                            || !same(s)) return
+                        if (repairAnchorWord(s)) return
+                        this.#clampTouchSelection(s, doc)
                     }
                     setTimeout(clampLater, 150)
                     setTimeout(clampLater, 500)
