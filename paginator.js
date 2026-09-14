@@ -427,7 +427,23 @@ export class Paginator extends HTMLElement {
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({ mode: 'closed' })
-    #observer = new ResizeObserver(() => this.render())
+    #lastContainerSize
+    #observer = new ResizeObserver(entries => {
+        // Mobile browsers grow/shrink the viewport by ~7–17% when the
+        // toolbar hides/shows mid-gesture; re-wrapping the whole book
+        // for that reads as a page refresh. Only re-render for real
+        // layout changes: any width change, or a height change large
+        // enough to be a rotation, keyboard, or split-screen.
+        const rect = entries?.[entries.length - 1]?.contentRect
+        if (rect && rect.width && rect.height && this.#lastContainerSize) {
+            const [w, h] = this.#lastContainerSize
+            if (Math.abs(rect.width - w) < 1
+                && Math.abs(rect.height - h) / h < 0.25) return
+        }
+        if (rect && rect.width && rect.height)
+            this.#lastContainerSize = [rect.width, rect.height]
+        this.render()
+    })
     #top
     #background
     #container
