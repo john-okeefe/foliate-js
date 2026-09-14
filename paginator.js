@@ -608,6 +608,34 @@ export class Paginator extends HTMLElement {
                 touchSelecting = e.pointerType === 'touch'
             })
             doc.addEventListener('keydown', () => touchSelecting = false)
+            // The word selected by the initial long-press. Chrome can
+            // re-anchor a touch drag at a rendered line break when the
+            // finger crosses just past a line-start word, silently dropping
+            // that word from the selection; keep it covered.
+            let anchorWordStart = null
+            doc.addEventListener('pointerdown', e => {
+                if (e.pointerType === 'touch') anchorWordStart = null
+            })
+            const preserveAnchorWord = sel => {
+                if (!sel.rangeCount || sel.type !== 'Range') return
+                const r = sel.getRangeAt(0)
+                if (!anchorWordStart) {
+                    anchorWordStart =
+                        { node: r.startContainer, offset: r.startOffset }
+                    return
+                }
+                const probe = doc.createRange()
+                probe.setStart(anchorWordStart.node, anchorWordStart.offset)
+                probe.collapse(true)
+                if (r.compareBoundaryPoints(Range.START_TO_START, probe) <= 0)
+                    return
+                if (selectionIsBackward(sel))
+                    sel.setBaseAndExtent(sel.anchorNode, sel.anchorOffset,
+                        probe.startContainer, probe.startOffset)
+                else
+                    sel.setBaseAndExtent(probe.startContainer, probe.startOffset,
+                        sel.focusNode, sel.focusOffset)
+            }
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -618,6 +646,7 @@ export class Paginator extends HTMLElement {
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
                 if (touchSelecting && sel.type === 'Range') {
+                    preserveAnchorWord(sel)
                     this.#clampTouchSelection(sel, doc)
                     // Chrome ignores (or re-maps) selection writes made from
                     // JS while the touch selection gesture is active, and no
@@ -627,8 +656,10 @@ export class Paginator extends HTMLElement {
                     // gesture has most likely ended.
                     const clampLater = () => {
                         const s = doc.getSelection()
-                        if (s && s.rangeCount && s.type === 'Range')
+                        if (s && s.rangeCount && s.type === 'Range') {
+                            preserveAnchorWord(s)
                             this.#clampTouchSelection(s, doc)
+                        }
                     }
                     setTimeout(clampLater, 150)
                     setTimeout(clampLater, 500)
