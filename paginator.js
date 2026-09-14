@@ -630,8 +630,7 @@ export class Paginator extends HTMLElement {
                 if (r.compareBoundaryPoints(Range.START_TO_START, probe) <= 0)
                     return
                 if (selectionIsBackward(sel))
-                    sel.setBaseAndExtent(sel.anchorNode, sel.anchorOffset,
-                        probe.startContainer, probe.startOffset)
+                    sel.extend(probe.startContainer, probe.startOffset)
                 else
                     sel.setBaseAndExtent(probe.startContainer, probe.startOffset,
                         sel.focusNode, sel.focusOffset)
