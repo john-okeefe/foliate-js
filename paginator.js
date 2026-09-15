@@ -733,10 +733,13 @@ export class Paginator extends HTMLElement {
                     if (wasSelecting || e.changedTouches.length !== 1) return
                     const touch = e.changedTouches[0]
                     // touchstart's preventDefault suppresses click
-                    // events; follow links directly
-                    const link = doc.elementFromPoint(touch.clientX, touch.clientY)
-                        ?.closest('a')
-                    link?.click()
+                    // events; dispatch one so foliate's link handling and
+                    // the overlayer's highlight hit-testing (the edit
+                    // popover) behave as on desktop
+                    const el = doc.elementFromPoint(touch.clientX, touch.clientY)
+                    el?.dispatchEvent(new (doc.defaultView ?? window).MouseEvent(
+                        'click', { clientX: touch.clientX, clientY: touch.clientY,
+                            bubbles: true, cancelable: true }))
                 })
                 doc.addEventListener('touchcancel', clearGesture)
                 doc.addEventListener('contextmenu', e => e.preventDefault())
