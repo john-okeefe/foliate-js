@@ -994,8 +994,13 @@ export class Paginator extends HTMLElement {
         this.scrollBy(dx, dy)
     }
     #onTouchEnd() {
+        const wasScrolled = this.#touchScrolled
         this.#touchScrolled = false
         if (this.scrolled || this.#touchSelActive) return
+        // A touch that never panned (a tap) is already page-aligned;
+        // snapping anyway emits a no-op relocate, which readers treat
+        // as a page turn (e.g. dismissing a just-opened popover).
+        if (!wasScrolled) return
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at
