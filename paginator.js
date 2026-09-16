@@ -151,10 +151,27 @@ const getVisibleRange = (doc, start, end, mapRect) => {
 }
 
 const selectionIsBackward = sel => {
-    const range = document.createRange()
+    // the selection may live in an iframe document while this module runs
+    // in the host document; create the range in the selection's own
+    // document or the boundary points cannot be compared
+    const doc = sel.anchorNode?.ownerDocument ?? document
+    const range = doc.createRange()
     range.setStart(sel.anchorNode, sel.anchorOffset)
     range.setEnd(sel.focusNode, sel.focusOffset)
     return range.collapsed
+}
+const wordAt = (doc, node, offset) => {
+    if (!node) return null
+    if (node.nodeType !== 3) return { node, offset }
+    const text = node.nodeValue
+    if (!text) return null
+    const isWord = c => /[\p{L}\p{N}]/u.test(c)
+    let start = Math.min(offset, text.length)
+    let end = start
+    while (start > 0 && isWord(text[start - 1])) start--
+    while (end < text.length && isWord(text[end])) end++
+    if (start === end) return { node, offset }
+    return { node, offset: start, endOffset: end }
 }
 
 const setSelectionTo = (target, collapse) => {
@@ -427,7 +444,23 @@ export class Paginator extends HTMLElement {
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({ mode: 'closed' })
-    #observer = new ResizeObserver(() => this.render())
+    #lastContainerSize
+    #observer = new ResizeObserver(entries => {
+        // Mobile browsers grow/shrink the viewport by ~7–17% when the
+        // toolbar hides/shows mid-gesture; re-wrapping the whole book
+        // for that reads as a page refresh. Only re-render for real
+        // layout changes: any width change, or a height change large
+        // enough to be a rotation, keyboard, or split-screen.
+        const rect = entries?.[entries.length - 1]?.contentRect
+        if (rect && rect.width && rect.height && this.#lastContainerSize) {
+            const [w, h] = this.#lastContainerSize
+            if (Math.abs(rect.width - w) < 1
+                && Math.abs(rect.height - h) / h < 0.25) return
+        }
+        if (rect && rect.width && rect.height)
+            this.#lastContainerSize = [rect.width, rect.height]
+        this.render()
+    })
     #top
     #background
     #container
@@ -448,6 +481,7 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #touchSelActive
     #lastVisibleRange
     constructor() {
         super()
@@ -594,8 +628,11 @@ export class Paginator extends HTMLElement {
         }, 700)
         this.addEventListener('load', ({ detail: { doc } }) => {
             let isPointerSelecting = false
-            doc.addEventListener('pointerdown', () => isPointerSelecting = true)
+            doc.addEventListener('pointerdown', e => {
+                if (e.pointerType !== 'touch') isPointerSelecting = true
+            })
             doc.addEventListener('pointerup', () => isPointerSelecting = false)
+            doc.addEventListener('pointercancel', () => isPointerSelecting = false)
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -617,6 +654,96 @@ export class Paginator extends HTMLElement {
             doc.addEventListener('focusin', e => this.scrolled ? null :
                 // NOTE: `requestAnimationFrame` is needed in WebKit
                 requestAnimationFrame(() => this.#scrollToAnchor(e.target)))
+            // ----- custom touch selection -----
+            // Chromium's native touch selection misbehaves in the
+            // columned layout: quick taps select words, the word
+            // iterator re-anchors at page boundaries, and the browser
+            // auto-scrolls the container when selections cross pages.
+            // preventDefault on touchstart disables it entirely;
+            // long-press selects the word under the finger and drag
+            // extends it word by word, clamped to the visible page, so
+            // the selection can never leave the page and the view can
+            // never move mid-gesture.
+            if (!this.scrolled) {
+                let gesture = null
+                const clearGesture = () => {
+                    if (gesture?.timer) clearTimeout(gesture.timer)
+                    gesture = null
+                    this.#touchSelActive = false
+                }
+                doc.addEventListener('touchstart', e => {
+                    const touch = e.changedTouches[0]
+                    if (!touch || e.touches.length !== 1) return clearGesture()
+                    e.preventDefault()
+                    const g = gesture = { x: touch.clientX, y: touch.clientY,
+                        id: touch.identifier, start: null, end: null, timer: null }
+                    g.timer = setTimeout(() => {
+                        if (gesture !== g) return
+                        const caret = this.#caretAt(g.x, g.y, doc)
+                        const word = caret && wordAt(doc, caret.node, caret.offset)
+                        if (!word || word.endOffset == null) {
+                            gesture = null
+                            return
+                        }
+                        const sel = doc.getSelection()
+                        sel.setBaseAndExtent(word.node, word.offset,
+                            word.node, word.endOffset)
+                        g.start = { node: word.node, offset: word.offset }
+                        g.end = { node: word.node, offset: word.endOffset }
+                        this.#touchSelActive = true
+                    }, 450)
+                }, { passive: false })
+                doc.addEventListener('touchmove', e => {
+                    const g = gesture
+                    if (!g) return
+                    const touch = [...e.changedTouches]
+                        .find(t => t.identifier === g.id)
+                    if (!touch) return
+                    if (!g.start) {
+                        // moving before the long-press engages: a pan —
+                        // stand down and let the paginator handle it
+                        if (Math.hypot(touch.clientX - g.x, touch.clientY - g.y) > 12)
+                            clearGesture()
+                        return
+                    }
+                    e.preventDefault()
+                    const caret = this.#caretAt(touch.clientX, touch.clientY, doc)
+                    if (!caret) return
+                    const word = wordAt(doc, caret.node, caret.offset)
+                    const end = word?.endOffset != null
+                        ? { node: word.node, offset: word.endOffset }
+                        : caret
+                    const startProbe = doc.createRange()
+                    startProbe.setStart(g.start.node, g.start.offset)
+                    startProbe.collapse(true)
+                    const endProbe = doc.createRange()
+                    endProbe.setStart(end.node, end.offset)
+                    endProbe.collapse(true)
+                    // whichever boundary of the long-pressed word keeps
+                    // it fully covered serves as the anchor
+                    const anchor = startProbe.compareBoundaryPoints(
+                        Range.START_TO_START, endProbe) > 0 ? g.end : g.start
+                    doc.getSelection().setBaseAndExtent(anchor.node, anchor.offset,
+                        end.node, end.offset)
+                }, { passive: false })
+                doc.addEventListener('touchend', e => {
+                    const g = gesture
+                    const wasSelecting = !!g?.start
+                    clearGesture()
+                    if (wasSelecting || e.changedTouches.length !== 1) return
+                    const touch = e.changedTouches[0]
+                    // touchstart's preventDefault suppresses click
+                    // events; dispatch one so foliate's link handling and
+                    // the overlayer's highlight hit-testing (the edit
+                    // popover) behave as on desktop
+                    const el = doc.elementFromPoint(touch.clientX, touch.clientY)
+                    el?.dispatchEvent(new (doc.defaultView ?? window).MouseEvent(
+                        'click', { clientX: touch.clientX, clientY: touch.clientY,
+                            bubbles: true, cancelable: true }))
+                })
+                doc.addEventListener('touchcancel', clearGesture)
+                doc.addEventListener('contextmenu', e => e.preventDefault())
+            }
         })
 
         this.#mediaQueryListener = () => {
@@ -820,6 +947,21 @@ export class Paginator extends HTMLElement {
             })
         })
     }
+    #caretAt(x, y, doc) {
+        // Touch points and caret mapping share the iframe's own
+        // (content) space, where the visible page is [start - size,
+        // start] for LTR; clamp into it so selections cannot leave
+        // the visible page.
+        const size = this.#rtl ? -this.size : this.size
+        const left = this.start - size
+        const right = this.start
+        const cx = Math.min(Math.max(x, left + 2), right - 2)
+        const caret = doc.caretRangeFromPoint?.(cx, y)
+            ?? doc.caretPositionFromPoint?.(cx, y)
+        if (!caret) return null
+        return { node: caret.startContainer ?? caret.offsetNode,
+            offset: caret.startOffset ?? caret.offset }
+    }
     #onTouchStart(e) {
         const touch = e.changedTouches[0]
         this.#touchState = {
@@ -833,6 +975,7 @@ export class Paginator extends HTMLElement {
         if (state.pinched) return
         state.pinched = globalThis.visualViewport.scale > 1
         if (this.scrolled || state.pinched) return
+        if (this.#touchSelActive) return
         if (e.touches.length > 1) {
             if (this.#touchScrolled) e.preventDefault()
             return
@@ -851,8 +994,13 @@ export class Paginator extends HTMLElement {
         this.scrollBy(dx, dy)
     }
     #onTouchEnd() {
+        const wasScrolled = this.#touchScrolled
         this.#touchScrolled = false
-        if (this.scrolled) return
+        if (this.scrolled || this.#touchSelActive) return
+        // A touch that never panned (a tap) is already page-aligned;
+        // snapping anyway emits a no-op relocate, which readers treat
+        // as a page turn (e.g. dismissing a just-opened popover).
+        if (!wasScrolled) return
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at

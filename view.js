@@ -251,7 +251,11 @@ export class View extends HTMLElement {
         }
 
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
-        if (this.isFixedLayout) {
+        if (this.book.format === 'comic' && options?.comic?.flow === 'webtoon') {
+            await import('./webtoon.js')
+            this.renderer = document.createElement('foliate-webtoon')
+        }
+        else if (this.isFixedLayout) {
             await import('./fixed-layout.js')
             this.renderer = document.createElement('foliate-fxl')
         } else {

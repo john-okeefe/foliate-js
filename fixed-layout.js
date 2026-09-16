@@ -23,7 +23,7 @@ const getViewport = (doc, viewport) => {
 };
 
 export class FixedLayout extends HTMLElement {
-  static observedAttributes = ["zoom", "interaction-mode"];
+  static observedAttributes = ["zoom", "interaction-mode", "spread"];
   #root = this.attachShadow({ mode: "closed" });
   #observer = new ResizeObserver(() => this.#onResize());
   #spreads;
@@ -57,6 +57,29 @@ export class FixedLayout extends HTMLElement {
     startTY: 0,
   };
   dragOffset = { x: 0, y: 0 };
+  // Rect annotations (PDF text highlights; comic regions later). Keyed by
+  // host-supplied id, stored as page-fraction rects so they survive iframe
+  // CSS-scaling and PDF hi-res re-renders without any re-anchoring work.
+  #rectAnnotations = new Map();
+  #touchState = {
+    mode: null, // null | "pending" | "pan" | "pinch" | "swipe" | "native"
+    id: null,
+    realTarget: null,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    startTX: 0,
+    startTY: 0,
+    startTime: 0,
+    startDist: 0,
+    startScale: 1,
+    lastMidX: 0,
+    lastMidY: 0,
+    lastTapTime: 0,
+    lastTapX: 0,
+    lastTapY: 0,
+  };
   #magnifier = {
     enabled: false,
     size: 150,
@@ -75,6 +98,7 @@ export class FixedLayout extends HTMLElement {
             display: block;
             overflow: hidden;
             position: relative;
+            touch-action: none;
         }`);
 
     this.#wrapper = document.createElement("div");
@@ -88,6 +112,22 @@ export class FixedLayout extends HTMLElement {
     this.#root.appendChild(this.#wrapper);
 
     this.#observer.observe(this);
+
+    // Touch gestures: pinch-zoom, two-finger pan, single-finger pan while
+    // zoomed, swipe page-turn at fit, double-tap zoom toggle. Page iframes
+    // forward their touch events here (see #attachEventListenersToIframe).
+    this.addEventListener("touchstart", this.#onTouchStart.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchmove", this.#onTouchMove.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchend", this.#onTouchEnd.bind(this), {
+      passive: false,
+    });
+    this.addEventListener("touchcancel", this.#onTouchCancel.bind(this), {
+      passive: false,
+    });
   }
 
   attributeChangedCallback(name, _, value) {
@@ -116,9 +156,13 @@ export class FixedLayout extends HTMLElement {
         break;
       }
       case "interaction-mode": {
-        if (value === "pan" || value === "select") {
+        if (value === "pan" || value === "select" || value === "text") {
           this.#interactionMode = value;
         }
+        break;
+      }
+      case "spread": {
+        this.#setSpread(value == null ? undefined : value);
         break;
       }
     }
@@ -147,6 +191,25 @@ export class FixedLayout extends HTMLElement {
   resetZoom() {
     this.#zoom = undefined;
     this.#render();
+  }
+
+  // Reset pan while keeping the current zoom: the wrapper's base layout
+  // already centers the spread, so translate(0,0) recenters it. Re-syncs
+  // #side afterwards (same rule as drag-end) so next()/prev() stay sane.
+  recenter() {
+    this.#transform.x = 0;
+    this.#transform.y = 0;
+    this.#applyTransform();
+    if (
+      !this.#center &&
+      !this.#left?.blank &&
+      !this.#right?.blank &&
+      !this.#portrait
+    ) {
+      const leftWidth = (this.#left.width ?? 0) * this.#transform.scale;
+      const viewportCenterInWrapper = this.getBoundingClientRect().width / 2;
+      this.#side = viewportCenterInWrapper < leftWidth ? "left" : "right";
+    }
   }
 
   toggleMagnifier() {
@@ -492,8 +555,16 @@ export class FixedLayout extends HTMLElement {
 
   #handleMouseDown(event) {
     if (event.button !== 0) return;
-    if (this.#isPDF && this.#interactionMode === "select" && !event.shiftKey)
+    if (this.#isPDF && this.#interactionMode === "text" && !event.shiftKey)
       return false;
+    if (this.#isPDF && this.#interactionMode === "select" && !event.shiftKey) {
+      const t = event.realTarget;
+      if (
+        t?.closest?.(".textLayer span") ||
+        t?.closest?.(".annotationLayer a")
+      )
+        return false;
+    }
 
     this.#dragState.startX = event.clientX;
     this.#dragState.startY = event.clientY;
@@ -534,6 +605,258 @@ export class FixedLayout extends HTMLElement {
     }
   }
 
+  // ----- touch gestures -----
+
+  #atFitScale() {
+    return this.#zoom == null;
+  }
+
+  #touchStartsOnSelectable(target) {
+    if (!this.#isPDF || this.#interactionMode === "pan") return false;
+    return !!target?.closest?.(".textLayer span, .annotationLayer a");
+  }
+
+  #getPinchInfo(touches) {
+    const [a, b] = touches;
+    return {
+      dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+      midX: (a.clientX + b.clientX) / 2,
+      midY: (a.clientY + b.clientY) / 2,
+    };
+  }
+
+  #onTouchStart(event) {
+    if (this.hasAttribute("panel-mode")) return;
+    const st = this.#touchState;
+    if (event.touches.length === 1) {
+      const t = event.touches[0];
+      st.mode = "pending";
+      st.id = t.identifier;
+      st.realTarget = event.realTarget ?? event.target ?? null;
+      st.startX = t.clientX;
+      st.startY = t.clientY;
+      st.lastX = t.clientX;
+      st.lastY = t.clientY;
+      st.startTX = this.#transform.x;
+      st.startTY = this.#transform.y;
+      st.startTime = Date.now();
+    } else if (event.touches.length >= 2) {
+      // A second finger always upgrades to pinch (cancels pan/swipe).
+      const { dist, midX, midY } = this.#getPinchInfo(event.touches);
+      st.mode = "pinch";
+      st.startDist = dist;
+      st.startScale = this.#transform.scale;
+      st.lastMidX = midX;
+      st.lastMidY = midY;
+      event.preventDefault();
+    }
+  }
+
+  #onTouchMove(event) {
+    const st = this.#touchState;
+    if (!st.mode) return;
+
+    if (st.mode === "pinch") {
+      if (event.touches.length < 2) return;
+      const { dist, midX, midY } = this.#getPinchInfo(event.touches);
+      const rect = this.getBoundingClientRect();
+      if (dist > 0 && st.startDist > 0) {
+        const target = dist / st.startDist * st.startScale;
+        const ratio = target / this.#transform.scale;
+        this.#zoomByRatio(midX - rect.left, midY - rect.top, ratio);
+      }
+      // two-finger pan: follow the midpoint
+      this.#transform.x += midX - st.lastMidX;
+      this.#transform.y += midY - st.lastMidY;
+      this.#applyTransform();
+      st.lastMidX = midX;
+      st.lastMidY = midY;
+      event.preventDefault();
+      return;
+    }
+
+    const t = [...event.touches].find((x) => x.identifier === st.id);
+    if (!t) return;
+
+    if (st.mode === "pending") {
+      if (Math.hypot(t.clientX - st.startX, t.clientY - st.startY) < 10)
+        return;
+      // Gesture decided on first significant movement.
+      if (this.#touchStartsOnSelectable(st.realTarget)) {
+        st.mode = "native"; // let the text layer handle selection
+        return;
+      }
+      if (this.#atFitScale()) {
+        st.mode = "swipe"; // page-turn gesture
+      } else {
+        st.mode = "pan";
+        this.style.cursor = "grabbing";
+      }
+    }
+
+    if (st.mode === "pan") {
+      this.#transform.x = st.startTX + (t.clientX - st.startX);
+      this.#transform.y = st.startTY + (t.clientY - st.startY);
+      this.#applyTransform();
+      event.preventDefault();
+    } else if (st.mode === "swipe") {
+      event.preventDefault();
+    }
+  }
+
+  #onTouchEnd(event) {
+    const st = this.#touchState;
+    if (!st.mode) return;
+
+    if (st.mode === "pinch") {
+      if (event.touches.length === 1) {
+        // continue as a single-finger pan with the remaining finger
+        const t = event.touches[0];
+        st.mode = "pan";
+        st.id = t.identifier;
+        st.startX = t.clientX;
+        st.startY = t.clientY;
+        st.startTX = this.#transform.x;
+        st.startTY = this.#transform.y;
+      } else if (event.touches.length === 0) {
+        st.mode = null;
+      }
+      return;
+    }
+
+    if (st.mode === "pan") {
+      if (event.touches.length === 0) {
+        st.mode = null;
+        this.style.cursor = "";
+      }
+      return;
+    }
+
+    if (st.mode === "swipe") {
+      const t = [...event.changedTouches].find(
+        (x) => x.identifier === st.id,
+      );
+      const dx = (t?.clientX ?? st.startX) - st.startX;
+      const dy = (t?.clientY ?? st.startY) - st.startY;
+      st.mode = null;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+        // Finger direction maps through next()/prev() so RTL (manga)
+        // reads correctly: forward is a left swipe in LTR, right in RTL.
+        if ((dx < 0) !== this.rtl) this.next();
+        else this.prev();
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (st.mode === "pending") {
+      // no significant movement: a tap. Double-tap toggles zoom.
+      const t = [...event.changedTouches].find(
+        (x) => x.identifier === st.id,
+      );
+      const x = t?.clientX ?? st.startX;
+      const y = t?.clientY ?? st.startY;
+      const now = Date.now();
+      const rect = this.getBoundingClientRect();
+      st.mode = null;
+      if (
+        now - st.lastTapTime < 300 &&
+        Math.hypot(x - st.lastTapX, y - st.lastTapY) < 30
+      ) {
+        st.lastTapTime = 0;
+        if (this.#atFitScale()) {
+          this.#zoomByRatio(x - rect.left, y - rect.top, 2.5);
+        } else {
+          this.resetZoom();
+        }
+        event.preventDefault();
+      } else {
+        st.lastTapTime = now;
+        st.lastTapX = x;
+        st.lastTapY = y;
+      }
+    }
+  }
+
+  #onTouchCancel() {
+    this.#touchState.mode = null;
+    this.style.cursor = "";
+  }
+
+  // ----- rect annotations -----
+
+  #frameForIndex(index) {
+    for (const frame of [this.#left, this.#right, this.#center]) {
+      if (frame && !frame.blank && frame.index === index) return frame;
+    }
+    return null;
+  }
+
+  // Host-side overlay: a div inside the frame's wrapper element, children
+  // positioned in percentages of the element box (which always equals the
+  // visible page area). This is immune to iframe-internal transforms
+  // (pdf.js scales <html> by 1/devicePixelRatio, which would shrink an
+  // in-document overlay), comic iframe CSS-scaling, PDF hi-res re-renders,
+  // and the host transform-based pan/zoom — no re-anchoring anywhere.
+  #ensureOverlay(frame) {
+    if (!frame?.element) return null;
+    let overlay = frame.element.querySelector(
+      ":scope > .foliate-rect-overlay",
+    );
+    if (!overlay) {
+      overlay = frame.element.ownerDocument.createElement("div");
+      overlay.className = "foliate-rect-overlay";
+      overlay.style.cssText =
+        "position:absolute;inset:0;pointer-events:none;";
+      frame.element.style.position = "relative";
+      frame.element.appendChild(overlay);
+    }
+    return overlay;
+  }
+
+  #renderAnnotationsIntoFrame(frame) {
+    if (!frame || frame.blank || frame.index == null) return;
+    const overlay = this.#ensureOverlay(frame);
+    if (!overlay) return;
+    const doc = frame.element.ownerDocument;
+    overlay.replaceChildren();
+    for (const a of this.#rectAnnotations.values()) {
+      if (a.index !== frame.index) continue;
+      for (const [x, y, w, h] of a.rects) {
+        const rect = doc.createElement("div");
+        Object.assign(rect.style, {
+          position: "absolute",
+          left: `${x * 100}%`,
+          top: `${y * 100}%`,
+          width: `${w * 100}%`,
+          height: `${h * 100}%`,
+          backgroundColor: a.color || "#ffd54f",
+          opacity: "0.35",
+          borderRadius: "2px",
+        });
+        overlay.appendChild(rect);
+      }
+    }
+  }
+
+  #renderAnnotationsForIndex(index) {
+    this.#renderAnnotationsIntoFrame(this.#frameForIndex(index));
+  }
+
+  addRectAnnotation({ key, index, rects, color }) {
+    if (!key || index == null || !Array.isArray(rects) || !rects.length)
+      return;
+    this.#rectAnnotations.set(key, { index, rects, color });
+    this.#renderAnnotationsForIndex(index);
+  }
+
+  removeRectAnnotation(key) {
+    const a = this.#rectAnnotations.get(key);
+    if (!a) return;
+    this.#rectAnnotations.delete(key);
+    this.#renderAnnotationsForIndex(a.index);
+  }
+
   async #createFrame({ index, src: srcOption }, frameId) {
     const srcOptionIsString = typeof srcOption === "string";
     const src = srcOptionIsString ? srcOption : srcOption?.src;
@@ -551,7 +874,8 @@ export class FixedLayout extends HTMLElement {
     iframe.setAttribute("scrolling", "no");
     iframe.setAttribute("part", "filter");
     this.#wrapper.append(element);
-    if (!src) return { blank: true, element, iframe, frameId };
+    if (!src)
+      return { blank: true, element, iframe, frameId, index, onZoom };
     return new Promise((resolve) => {
       iframe.addEventListener(
         "load",
@@ -562,7 +886,15 @@ export class FixedLayout extends HTMLElement {
           );
           const { width, height } = getViewport(doc, this.defaultViewport);
 
-          this.#attachEventListenersToIframe(doc, frameId, { element, iframe });
+          this.#attachEventListenersToIframe(doc, frameId, {
+            element,
+            iframe,
+            index,
+          });
+          // Re-render persisted annotations into the fresh frame (frames
+          // are recreated on every spread change; the spread fields aren't
+          // assigned yet, so pass the frame under construction directly).
+          this.#renderAnnotationsIntoFrame({ element, iframe, index });
 
           resolve({
             element,
@@ -571,6 +903,7 @@ export class FixedLayout extends HTMLElement {
             height: parseFloat(height),
             onZoom,
             frameId,
+            index,
           });
         },
         { once: true },
@@ -580,17 +913,18 @@ export class FixedLayout extends HTMLElement {
   }
 
   #attachEventListenersToIframe(doc, frameId, frame) {
-    const convertCoords = (e) => {
+    const convertPoint = (x, y) => {
       const iframeRect = frame.iframe.getBoundingClientRect();
       const flRect = this.getBoundingClientRect();
       const scaleX = iframeRect.width / (doc.documentElement.clientWidth || 1);
       const scaleY =
         iframeRect.height / (doc.documentElement.clientHeight || 1);
       return {
-        clientX: iframeRect.left - flRect.left + e.clientX * scaleX,
-        clientY: iframeRect.top - flRect.top + e.clientY * scaleY,
+        clientX: iframeRect.left - flRect.left + x * scaleX,
+        clientY: iframeRect.top - flRect.top + y * scaleY,
       };
     };
+    const convertCoords = (e) => convertPoint(e.clientX, e.clientY);
     if (!doc) return;
 
     const images = doc.querySelectorAll("img");
@@ -600,6 +934,85 @@ export class FixedLayout extends HTMLElement {
       img.style.webkitUserDrag = "none";
       img.style.WebkitUserDrag = "none";
     });
+
+    // Forward touches to the host gesture engine with converted
+    // coordinates. Handlers decide whether to preventDefault (pan/pinch/
+    // swipe) or let the iframe handle it natively (text selection, taps).
+    const forwardTouches = (list) =>
+      [...list].map((t) => {
+        const p = convertPoint(t.clientX, t.clientY);
+        return { identifier: t.identifier, ...p };
+      });
+    const synthTouch = (event) => ({
+      touches: forwardTouches(event.touches),
+      changedTouches: forwardTouches(event.changedTouches),
+      realTarget: event.target,
+      preventDefault: () => event.preventDefault(),
+    });
+    doc.addEventListener(
+      "touchstart",
+      (event) => {
+        this.#onTouchStart(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchmove",
+      (event) => {
+        this.#onTouchMove(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchend",
+      (event) => {
+        this.#onTouchEnd(synthTouch(event));
+      },
+      { passive: false },
+    );
+    doc.addEventListener(
+      "touchcancel",
+      (event) => {
+        this.#onTouchCancel(synthTouch(event));
+      },
+      { passive: false },
+    );
+
+    // Click hit-testing for rect annotations (edit popover). Skipped while a
+    // text selection is active so drag-selecting doesn't pop the editor.
+    // Denominator: the rendered canvas for PDFs (its post-transform rect IS
+    // the visible page; documentElement is dpr× too small because pdf.js
+    // scales <html> by 1/devicePixelRatio), the img for comics.
+    doc.addEventListener(
+      "click",
+      (event) => {
+        if (!this.#rectAnnotations.size || frame.index == null) return;
+        const sel = doc.getSelection();
+        if (sel && !sel.isCollapsed) return;
+        const denom =
+          doc.querySelector("#canvas canvas") ||
+          doc.querySelector("img");
+        const dr = denom?.getBoundingClientRect();
+        if (!dr || !dr.width || !dr.height) return;
+        const fx = (event.clientX - dr.left) / dr.width;
+        const fy = (event.clientY - dr.top) / dr.height;
+        for (const [key, a] of this.#rectAnnotations) {
+          if (a.index !== frame.index) continue;
+          for (const [x, y, w, h] of a.rects) {
+            if (fx >= x && fx <= x + w && fy >= y && fy <= y + h) {
+              const { clientX, clientY } = convertCoords(event);
+              this.dispatchEvent(
+                new CustomEvent("show-rect-annotation", {
+                  detail: { key, index: a.index, clientX, clientY },
+                }),
+              );
+              return;
+            }
+          }
+        }
+      },
+      false,
+    );
 
     doc.addEventListener(
       "wheel",
@@ -643,6 +1056,7 @@ export class FixedLayout extends HTMLElement {
       });
       mouseEvent.sourceIframe = frameId;
       mouseEvent.sourceFrame = frame;
+      mouseEvent.realTarget = event.target;
       const dragStarted = this.#handleMouseDown(mouseEvent);
       if (dragStarted) event.preventDefault();
     });
@@ -831,11 +1245,15 @@ export class FixedLayout extends HTMLElement {
     this.spread = rendition?.spread;
     this.defaultViewport = rendition?.viewport;
 
-    const rtl = book.dir === "rtl";
-    const ltr = !rtl;
-    this.rtl = rtl;
+    this.rtl = book.dir === "rtl";
+    this.#computeSpreads();
+  }
 
-    if (rendition?.spread === "none")
+  #computeSpreads() {
+    const { book } = this;
+    const rtl = this.rtl;
+    const ltr = !rtl;
+    if (this.spread === "none")
       this.#spreads = book.sections.map((section) => ({ center: section }));
     else
       this.#spreads = book.sections.reduce(
@@ -871,6 +1289,17 @@ export class FixedLayout extends HTMLElement {
         },
         [{}],
       );
+  }
+
+  #setSpread(value) {
+    this.spread = value;
+    const started = this.#index >= 0;
+    const currentSection = started ? this.book?.sections[this.index] : null;
+    this.#computeSpreads();
+    if (!started) return;
+    const resolved = currentSection ? this.getSpreadOf(currentSection) : null;
+    if (resolved) this.goToSpread(resolved.index, resolved.side, "page");
+    else this.#render();
   }
 
   get index() {
