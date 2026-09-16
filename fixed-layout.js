@@ -25,7 +25,24 @@ const getViewport = (doc, viewport) => {
 export class FixedLayout extends HTMLElement {
   static observedAttributes = ["zoom", "interaction-mode", "spread"];
   #root = this.attachShadow({ mode: "closed" });
-  #observer = new ResizeObserver(() => this.#onResize());
+  #observer = new ResizeObserver((entries) => {
+    // Mobile browsers grow/shrink the viewport by ~7-17% when the
+    // toolbar hides/shows mid-gesture; re-rendering the PDF for that
+    // races with active selections and can blank the canvas. Only
+    // re-render for real layout changes: any width change, or a
+    // height change large enough to be a rotation, keyboard, or
+    // split-screen.
+    const rect = entries?.[entries.length - 1]?.contentRect;
+    if (rect && rect.width && rect.height && this.#lastSize) {
+      const [w, h] = this.#lastSize;
+      if (Math.abs(rect.width - w) < 1 && Math.abs(rect.height - h) / h < 0.25)
+        return;
+    }
+    if (rect && rect.width && rect.height)
+      this.#lastSize = [rect.width, rect.height];
+    this.#onResize();
+  });
+  #lastSize;
   #spreads;
   #index = -1;
   defaultViewport;
