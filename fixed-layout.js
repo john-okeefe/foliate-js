@@ -686,6 +686,19 @@ export class FixedLayout extends HTMLElement {
         st.mode = "native"; // let the text layer handle selection
         return;
       }
+      // The long-press may have already engaged a native selection
+      // (Chromium selects the nearest word even when the finger
+      // landed between spans) — a drag with a live selection is
+      // extending it regardless of where the finger started.
+      // Classifying it as swipe/pan would preventDefault the
+      // touchmove and cancel the selection mid-drag.
+      for (const { doc } of this.getContents()) {
+        const sel = doc?.getSelection?.();
+        if (sel && !sel.isCollapsed) {
+          st.mode = "native";
+          return;
+        }
+      }
       if (this.#atFitScale()) {
         st.mode = "swipe"; // page-turn gesture
       } else {
