@@ -145,6 +145,11 @@ export class FixedLayout extends HTMLElement {
     this.addEventListener("touchcancel", this.#onTouchCancel.bind(this), {
       passive: false,
     });
+
+    // Desktop double-click zoom toggle, mirroring the touch double-tap.
+    // Catches events on the host itself (letterbox gutters); page iframes
+    // forward their dblclick separately (see #attachEventListenersToIframe).
+    this.addEventListener("dblclick", this.#handleDoubleClick.bind(this));
   }
 
   attributeChangedCallback(name, _, value) {
@@ -620,6 +625,34 @@ export class FixedLayout extends HTMLElement {
         this.getBoundingClientRect().width / 2 - this.#transform.x;
       this.#side = viewportCenterInWrapper < leftWidth ? "left" : "right";
     }
+  }
+
+  // Desktop counterpart of the touch double-tap toggle: at fit scale a
+  // double-click zooms in at the clicked location; zoomed or panned it
+  // resets to 100% centered. PDF text interactions keep native
+  // double-click (word selection, links) in select/text modes — zoom only
+  // when the target isn't text/annotation content. Returns true when the
+  // event was consumed (callers preventDefault then).
+  #handleDoubleClick(event) {
+    if (this.hasAttribute("panel-mode")) return false;
+    if (this.#isPDF && this.#interactionMode !== "pan") {
+      const t = event.realTarget ?? event.target;
+      if (
+        t?.closest?.(".textLayer span") ||
+        t?.closest?.(".annotationLayer a")
+      )
+        return false;
+    }
+    const rect = this.getBoundingClientRect();
+    const cx = event.clientX - rect.left;
+    const cy = event.clientY - rect.top;
+    if (this.#atFitScale()) {
+      this.#zoomByRatio(cx, cy, 2.5);
+    } else {
+      this.resetZoom();
+    }
+    event.preventDefault();
+    return true;
   }
 
   // ----- touch gestures -----
@@ -1131,6 +1164,27 @@ export class FixedLayout extends HTMLElement {
       mouseEvent.sourceFrame = frame;
       this.#handleMouseUp(mouseEvent);
       event.preventDefault();
+    });
+
+    // Double-click zoom: forwarded with converted coordinates and the
+    // iframe's real target (for PDF text-layer hit-testing).
+    doc.addEventListener("dblclick", (event) => {
+      const { clientX, clientY } = convertCoords(event);
+      const mouseEvent = new MouseEvent("dblclick", {
+        button: event.button,
+        clientX,
+        clientY,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      mouseEvent.sourceIframe = frameId;
+      mouseEvent.sourceFrame = frame;
+      mouseEvent.realTarget = event.target;
+      if (this.#handleDoubleClick(mouseEvent)) event.preventDefault();
     });
   }
 
