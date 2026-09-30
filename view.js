@@ -117,6 +117,10 @@ export const makeBook = async (file, options = {}) => {
             const { makeFB2 } = await import('./fb2.js')
             book = await makeFB2(file)
         }
+        else {
+            const { isText, makeTextBook } = await import('./text.js')
+            if (isText(file)) book = await makeTextBook(file)
+        }
     }
     if (!book) throw new UnsupportedTypeError('File type not supported')
     return book
