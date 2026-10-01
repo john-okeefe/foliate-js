@@ -99,8 +99,12 @@ export const makeBook = async (file, options = {}) => {
             book = await makeFB2(blob)
         }
         else {
-            const { EPUB } = await import('./epub.js')
-            book = await new EPUB(loader).init()
+            const { isDocx, makeDocxBook } = await import('./docx.js')
+            if (isDocx(loader.entries)) book = await makeDocxBook(file)
+            else {
+                const { EPUB } = await import('./epub.js')
+                book = await new EPUB(loader).init()
+            }
         }
     }
     else if (await isPDF(file)) {

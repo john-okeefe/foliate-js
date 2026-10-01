@@ -1,6 +1,6 @@
 {
   "name": "foliate-js",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Render e-books in the browser",
   "repository": {
     "type": "git",
@@ -43,5 +43,8 @@
     "dictd",
     "stardict",
     "opds"
-  ]
+  ],
+  "dependencies": {
+    "mammoth": "^1.13.0"
+  }
 }

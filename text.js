@@ -36,10 +36,6 @@ export const makeTextBook = async file => {
     if (cur.length) chunks.push(cur)
 
     const urls = new Map()
-    const makeHTML = paras => `<!DOCTYPE html><html><head><meta charset="utf-8">`
-        + `</head><body>`
-        + paras.map(p => `<p>${escapeHTML(p)}</p>`).join('\n')
-        + `</body></html>`
     const load = i => {
         if (!urls.has(i)) {
             const html = chunks[i].map(p => `<p>${escapeHTML(p)}</p>`).join('\n')
