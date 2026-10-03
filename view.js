@@ -121,6 +121,14 @@ export const makeBook = async (file, options = {}) => {
             const { makeFB2 } = await import('./fb2.js')
             book = await makeFB2(file)
         }
+        else if (await (await import('./pdb.js')).isPDB(file)) {
+            const { makePalmDocBook } = await import('./pdb.js')
+            book = await makePalmDocBook(file)
+        }
+        else if (await (await import('./rtf.js')).isRTF(file)) {
+            const { makeRTFBook } = await import('./rtf.js')
+            book = await makeRTFBook(file)
+        }
         else {
             const { isText, makeTextBook } = await import('./text.js')
             if (isText(file)) book = await makeTextBook(file)

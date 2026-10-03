@@ -180,7 +180,7 @@ const concatTypedArray3 = (a, b, c) => {
 }
 
 const decoder = new TextDecoder()
-const getString = buffer => decoder.decode(buffer)
+export const getString = buffer => decoder.decode(buffer)
 const getUint = buffer => {
     if (!buffer) return
     const l = buffer.byteLength
@@ -226,7 +226,7 @@ const countUnsetEnd = x => {
     return count
 }
 
-const decompressPalmDOC = array => {
+export const decompressPalmDOC = array => {
     let output = []
     for (let i = 0; i < array.length; i++) {
         const byte = array[i]
@@ -483,7 +483,7 @@ export const isMOBI = async file => {
     return magic === 'BOOKMOBI'// || magic === 'TEXtREAd'
 }
 
-class PDB {
+export class PDB {
     #file
     #offsets
     pdb
