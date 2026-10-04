@@ -381,6 +381,10 @@ class View {
         }
     }
     expand() {
+        // A queued resize tick can run against a torn-down or
+        // not-yet-parsed iframe; bail instead of throwing (the caller
+        // re-renders on the next real observation).
+        if (!this.document?.documentElement) return
         const { documentElement } = this.document
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
