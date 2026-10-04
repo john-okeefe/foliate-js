@@ -92,6 +92,10 @@ const getBoundingClientRect = target => {
 }
 
 const getVisibleRange = (doc, start, end, mapRect) => {
+    // Same teardown race as expand(): a scroll-anchor tick can run
+    // against a not-yet-parsed iframe document (no body / documentElement
+    // yet) — return a null range so the caller skips visibility math.
+    if (!doc || !doc.body || !doc.documentElement) return null
     // first get all visible nodes
     const acceptNode = node => {
         const name = node.localName?.toLowerCase()
@@ -1107,6 +1111,9 @@ export class Paginator extends HTMLElement {
     }
     #afterScroll(reason) {
         const range = this.#getVisibleRange()
+        // Torn-down/not-yet-loaded document tick — preserve the previous
+        // visibility state instead of anchoring on a null range.
+        if (!range) return
         this.#lastVisibleRange = range
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
